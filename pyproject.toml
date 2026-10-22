@@ -24,4 +24,4 @@ bypass-selection = true
 "zmclaude" = "zmclaude.py"
 
 [tool.hatch.build.targets.sdist]
-include = ["zmclaude", "README.md", "LICENSE", "rules.example.toml", "docs/manual.md"]
+include = ["zmclaude", "README.md", "LICENSE", "docs/manual.md"]
