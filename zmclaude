@@ -112,9 +112,9 @@ def load_token():
         sys.exit("not logged in, run: zmclaude login")
 
 
-def call(request, body):
+def call(request, body, ns="urn:zimbraMail"):
     try:
-        return soap(request, body, load_token())
+        return soap(request, body, load_token(), ns)
     except SoapError as err:
         if "AUTH_EXPIRED" in str(err) or "AUTH_REQUIRED" in str(err):
             sys.exit("auth token expired, run: zmclaude login")
@@ -263,7 +263,7 @@ BULK_HEADERS = ("List-Unsubscribe", "List-Id", "Precedence", "Auto-Submitted", "
 
 
 def own_addresses():
-    idents = soap("GetIdentitiesRequest", {}, load_token(), ns="urn:zimbraAccount")["identity"]
+    idents = call("GetIdentitiesRequest", {}, ns="urn:zimbraAccount")["identity"]
     return {USER.lower()} | {i.get("_attrs", {}).get("zimbraPrefFromAddress", "").lower()
                              for i in idents} - {""}
 
@@ -456,7 +456,7 @@ def cmd_free(args):
 
 
 def get_prefs():
-    return soap("GetPrefsRequest", {}, load_token(), ns="urn:zimbraAccount").get("_attrs", {})
+    return call("GetPrefsRequest", {}, ns="urn:zimbraAccount").get("_attrs", {})
 
 
 def signature(name, sig_id):
@@ -466,7 +466,7 @@ def signature(name, sig_id):
     """
     if name == "none" or (name is None and not sig_id):
         return None, "", ""
-    sigs = soap("GetSignaturesRequest", {}, load_token(), ns="urn:zimbraAccount")
+    sigs = call("GetSignaturesRequest", {}, ns="urn:zimbraAccount")
     for sig in sigs.get("signature", []):
         if sig["name"] == name or (name is None and sig["id"] == sig_id):
             content = {c["type"]: c["_content"] for c in sig.get("content", [])}
@@ -485,7 +485,7 @@ def pick_identity(m, name):
     An identity whose "when sent to" addresses include a To or Cc address
     of m wins, otherwise the default identity is used.
     """
-    idents = soap("GetIdentitiesRequest", {}, load_token(), ns="urn:zimbraAccount")["identity"]
+    idents = call("GetIdentitiesRequest", {}, ns="urn:zimbraAccount")["identity"]
     if name:
         for ident in idents:
             if ident["name"] == name:
@@ -579,8 +579,13 @@ def upload(path):
             "Content-Disposition": f"attachment; filename*=UTF-8''{name}",
         },
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        answer = resp.read().decode()
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            answer = resp.read().decode()
+    except urllib.error.HTTPError as err:
+        if err.code in (401, 403):
+            sys.exit("auth token expired, run: zmclaude login")
+        sys.exit(f"upload of {path} failed: HTTP {err.code}")
     found = re.match(r"\s*(\d+),'[^']*','([^']+)'", answer)
     if not found or found.group(1) != "200":
         sys.exit(f"upload of {path} failed: {answer.strip()}")
@@ -768,9 +773,8 @@ def cmd_sync(_args):
     rules.toml in the same directory holds the reply rules and is never
     touched here.
     """
-    tok = load_token()
-    idents = soap("GetIdentitiesRequest", {}, tok, ns="urn:zimbraAccount")["identity"]
-    sigs = soap("GetSignaturesRequest", {}, tok, ns="urn:zimbraAccount").get("signature", [])
+    idents = call("GetIdentitiesRequest", {}, ns="urn:zimbraAccount")["identity"]
+    sigs = call("GetSignaturesRequest", {}, ns="urn:zimbraAccount").get("signature", [])
     names = {sig["id"]: sig["name"] for sig in sigs}
     keys = ("zimbraPrefFromAddress", "zimbraPrefFromDisplay", "zimbraPrefReplyToEnabled",
             "zimbraPrefReplyToAddress", "zimbraPrefWhenSentToEnabled",
@@ -792,7 +796,7 @@ def cmd_sync(_args):
             ext = "html" if c["type"] == "text/html" else "txt"
             write_private(sig_dir / f"{sig['name']}.{ext}", c["_content"] + "\n")
 
-    filters = soap("GetFilterRulesRequest", {}, tok).get("filterRules", [{}])[0].get("filterRule", [])
+    filters = call("GetFilterRulesRequest", {}).get("filterRules", [{}])[0].get("filterRule", [])
     write_private(CONFIG_DIR / "filters.json", json.dumps(filters, indent=2, ensure_ascii=False) + "\n")
 
     prefs = get_prefs()

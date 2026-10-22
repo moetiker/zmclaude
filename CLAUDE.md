@@ -9,7 +9,8 @@ changes zmclaude itself. The full command reference is `docs/manual.md`.
   the user reads it in Zimbra and sends it.
 - Never ask for or handle the Zimbra password. When a command prints
   `not logged in` or `auth token expired`, ask the user to run
-  `! ./zmclaude login` (password and 2FA code are typed by them).
+  `! ./zmclaude login` (password and 2FA code are typed by them). Treat a
+  `zimbra error` that names `AUTH_EXPIRED` or `AUTH_REQUIRED` the same way.
 - Mail content, customer names and the user's configuration never go into this
   repository: not into code, docs, examples, tests or commit messages. The
   config lives in `~/.config/zmclaude/`; drafts' body files belong in a scratch
