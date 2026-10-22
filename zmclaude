@@ -974,8 +974,8 @@ def cmd_init(args):
 
     Existing files are left as they are.
     """
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     settings = {"url": check_url(args.url), "user": args.user}
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     if args.from_name:
         settings["from_name"] = args.from_name
     # a JSON string is a valid TOML basic string
