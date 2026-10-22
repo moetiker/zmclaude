@@ -97,7 +97,13 @@ def soap(request, body, token=None, ns="urn:zimbraMail"):
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.load(resp)
     except urllib.error.HTTPError as err:
-        data = json.load(err)
+        # Zimbra answers a fault with HTTP 500 and a JSON body; a proxy may not
+        try:
+            data = json.load(err)
+        except ValueError:
+            sys.exit(f"{URL}: HTTP {err.code} {err.reason}")
+    except ValueError:
+        sys.exit(f"{URL}: the answer is not JSON, is this a Zimbra server?")
     result = data.get("Body", {})
     if "Fault" in result:
         fault = result["Fault"]
@@ -1079,6 +1085,12 @@ def main():
         args.func(args)
     except SoapError as err:
         sys.exit(f"zimbra error: {err}")
+    except urllib.error.URLError as err:
+        sys.exit(f"cannot reach {URL}: {getattr(err.reason, 'strerror', None) or err.reason}")
+    except TimeoutError:
+        sys.exit(f"{URL}: no answer in time")
+    except OSError as err:
+        sys.exit(f"{err.filename}: {err.strerror}" if err.filename else str(err))
 
 
 if __name__ == "__main__":
