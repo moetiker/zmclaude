@@ -25,3 +25,10 @@ bypass-selection = true
 
 [tool.hatch.build.targets.sdist]
 include = ["zmclaude", "README.md", "LICENSE", "docs/manual.md"]
+
+# ruff only picks up *.py files by itself
+[tool.ruff]
+extend-include = ["zmclaude"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
