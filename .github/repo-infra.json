@@ -1,0 +1,16 @@
+{
+  "ecosystems": [
+    "python"
+  ],
+  "moving_major_tag": false,
+  "version_files": [
+    {
+      "path": "pyproject.toml",
+      "pattern": "^version\\s*=\\s*\"[^\"]*\"",
+      "replacement": "version = \"$VERSION\"",
+      "verify": "^version\\s*=\\s*\"$VERSION\""
+    }
+  ],
+  "publish": [],
+  "build": []
+}
