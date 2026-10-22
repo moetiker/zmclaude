@@ -438,10 +438,23 @@ def cmd_save(args):
     parts = {part: name for part, name, *_ in attachment_parts(get_msg(args.id))}
     if args.part not in parts:
         sys.exit(f"message {args.id} has no attachment part {args.part}")
-    name = Path(parts[args.part] or f"part-{args.part}").name
-    target = Path(args.dir) / name
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(fetch_rest(f"?id={urllib.parse.quote(args.id)}&part={urllib.parse.quote(args.part)}"))
+    data = fetch_rest(f"?id={urllib.parse.quote(args.id)}&part={urllib.parse.quote(args.part)}")
+    # the sender chooses the name: no directories, no hidden files, never overwrite
+    name = Path(parts[args.part] or "").name or f"part-{args.part}"
+    if name.startswith("."):
+        name = "_" + name
+    directory = Path(args.dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    stem, suffix = Path(name).stem, Path(name).suffix
+    n = 0
+    while True:
+        target = directory / (f"{stem}-{n}{suffix}" if n else name)
+        try:
+            with open(target, "xb") as f:
+                f.write(data)
+            break
+        except FileExistsError:
+            n += 1
     print(target)
 
 
@@ -1036,7 +1049,7 @@ def main():
     p = sub.add_parser("save", help="save an attachment")
     p.add_argument("id")
     p.add_argument("part")
-    p.add_argument("dir", nargs="?", default=".")
+    p.add_argument("dir", nargs="?", default="attachments")
     p.set_defaults(func=cmd_save)
     p = sub.add_parser("contacts", help="look up addresses in contacts and GAL")
     p.add_argument("query")

@@ -81,7 +81,7 @@ and stores it with **draft**.
 - `thread ID [--full]`: Print every message of the conversation of *ID*, oldest first, except those in the trash. Unless `--full` is given, each block of lines starting with `>` is shown as `> [...]`, and the text is cut at the first attribution or header line (`On ... wrote:`, `From:`, `-----Original Message-----`) that follows new text.
 - `raw ID [--headers]`: Print the stored MIME message, or only its top-level headers.
 - `attachments ID`: List the attachments of a message with part number, type, size and file name.
-- `save ID PART [DIR]`: Save attachment *PART* of message *ID* into *DIR*, by default the current directory, and print the path.
+- `save ID PART [DIR]`: Save attachment *PART* of message *ID* into *DIR*, by default `attachments` in the current directory, and print the path. An existing file is never overwritten: the name gets a number, as in `report-1.pdf`. A name that starts with a dot gets a leading `_`.
 - `contacts QUERY`: Look up addresses in the contacts and the global address list.
 - `free [--start YYYY-MM-DD] [--days N]`: Print the free times from the calendar per working day, see **OPTIONS**.
 - `rule ID`: Print the identity and the reply rule that apply to a message.
