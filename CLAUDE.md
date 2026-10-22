@@ -25,8 +25,10 @@ changes zmclaude itself. The full command reference is `docs/manual.md`.
    `save ID PART DIR` when the mail refers to an attachment, then look at it.
 3. `./zmclaude rule ID` for the identity and the reply rule. Follow the rule:
    language, `address` (Sie/du/auto), greeting, closing, `facts`, `notes`.
-   `todo` also names earlier answers in `answers_dir` for the same sender;
-   read them and reuse what fits.
+   `todo` also names earlier answers in `answers_dir`: `same sender` ones went
+   to this person; read them and reuse what fits. `same domain` ones went to
+   someone else at the same organisation; reuse wording and general answers
+   from them, never facts about that other person or their case.
 4. Write the reply as an HTML fragment (`<div>` per paragraph, `<div><br></div>`
    between them, closing as the rule says). Write it in the language of the
    incoming mail. Do not add the signature or the quote; `draft` does that.

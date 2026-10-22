@@ -65,7 +65,9 @@ The full reference is the manual, [`docs/manual.md`](docs/manual.md).
 later sent reply and newsletters or automatic mail (`List-Unsubscribe`,
 `List-Id`, `Precedence`, `Auto-Submitted`). Mail from a ticketing system and
 mail an explicit reply rule matches is always listed. For each mail it names
-the reply rule, an existing draft and logged answers to the same sender.
+the reply rule, an existing draft, logged answers to the same sender and,
+listed apart, answers to other people at the same domain (not for free mail
+domains such as gmail.com).
 It checks at most the newest 200 inbox mails of the period and says so on
 standard error when there are more.
 
@@ -88,7 +90,7 @@ text otherwise.
 
 `~/.config/zmclaude/` (or `ZMCLAUDE_CONFIG`) holds:
 
-- `config.toml`: `url`, `user` and optionally `from_name`, `ticket_systems` (addresses of ticketing systems such as RT, whose mail `todo` always lists) and `answers_dir` (a folder of Markdown files with earlier answers that `todo` searches by sender).
+- `config.toml`: `url`, `user` and optionally `from_name`, `ticket_systems` (addresses of ticketing systems such as RT, whose mail `todo` always lists) `answers_dir` (a folder of Markdown files with earlier answers that `todo` searches by sender and domain) and `freemail_domains` (more domains such as gmail.com where `todo` does not search by domain).
 - `rules.toml`: Reply rules: tone, greeting, closing and fixed facts per recipient address, sender or subject. See `rules.example.toml`. `sync` never touches it.
 - `identities.json`, `signatures/`, `filters.json`, `prefs.json`: Copies from Zimbra, rewritten by `sync`.
 

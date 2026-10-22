@@ -24,7 +24,8 @@ Environment variables override the file, see **ENVIRONMENT**.
 - `user`: Account name, for example `jane@example.com`. Required.
 - `from_name`: Sender name used when an identity sets none.
 - `ticket_systems`: List of addresses of ticketing systems such as RT. The **todo** command always lists mail from them.
-- `answers_dir`: Folder of Markdown files with earlier answers. The **todo** command names the files that mention the sender of a mail.
+- `answers_dir`: Folder of Markdown files with earlier answers. The **todo** command names the files that mention the sender of a mail as `same sender`, and files that mention only another address of the sender's domain as `same domain`.
+- `freemail_domains`: List of further domains shared by unrelated people, in addition to the built-in list (gmail.com, outlook.com, bluewin.ch and others). **todo** lists no `same domain` answers for them.
 
 Reply rules live in `rules.toml` in the same directory.
 The first rule whose `match` fits a mail applies; a rule without `match` fits every mail.

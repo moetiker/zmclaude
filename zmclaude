@@ -287,18 +287,34 @@ def ticket_addresses():
     return {a.lower() for a in read_config().get("ticket_systems", [])}
 
 
+# domains shared by unrelated people; an answer to another address there
+# went to a different person, so todo does not list it
+FREEMAIL = {"gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
+            "yahoo.com", "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com",
+            "gmx.ch", "gmx.de", "gmx.net", "gmx.at", "web.de", "t-online.de", "bluewin.ch",
+            "sunrise.ch", "hispeed.ch", "yahoo.de", "hotmail.de", "outlook.de"}
+
+
 def similar_answers(sender):
-    """Return names of logged answers that mention the sender or their domain."""
+    """Return names of logged answers as (same sender, same domain only).
+
+    The domain list stays empty for free mail domains, see FREEMAIL and the
+    config key freemail_domains.
+    """
     folder = answers_dir()
     if not folder or not sender:
-        return []
+        return [], []
     domain = sender.rpartition("@")[2]
-    found = []
+    shared = FREEMAIL | {d.lower() for d in read_config().get("freemail_domains", [])}
+    at_domain = None if domain in shared else re.compile(r"@" + re.escape(domain) + r"(?![\w.-])")
+    same_sender, same_domain = [], []
     for f in sorted(folder.glob("*.md")):
         text = f.read_text(encoding="utf-8", errors="replace").lower()
-        if sender in text or domain in text:
-            found.append(f.name)
-    return found
+        if sender in text:
+            same_sender.append(f.name)
+        elif at_domain and at_domain.search(text):
+            same_domain.append(f.name)
+    return same_sender, same_domain
 
 
 def cmd_todo(args):
@@ -344,9 +360,11 @@ def cmd_todo(args):
         notes = (["ticket"] if ticket else []) + [f"rule: {rule.get('name', '?')}" if rule else "rule: -"]
         if draft:
             notes.append(f"draft {draft}")
-        similar = [] if sender in own or ticket else similar_answers(sender)
-        if similar:
-            notes.append("similar: " + ", ".join(similar))
+        same_sender, same_domain = ([], []) if sender in own or ticket else similar_answers(sender)
+        if same_sender:
+            notes.append("same sender: " + ", ".join(same_sender))
+        if same_domain:
+            notes.append("same domain: " + ", ".join(same_domain))
         unread = "*" if "u" in m.get("f", "") else " "
         sender_s = next((addr(e) for e in m.get("e", []) if e["t"] == "f"), "?")
         print(f"{m['id']:>8} {unread} {when(m['d'])}  {sender_s[:38]:<38}  {m.get('su', '')}")
