@@ -65,6 +65,15 @@ def read_toml(path):
         sys.exit(f"{path}: {err}")
 
 
+def check_url(url):
+    """Exit unless url is https; plain http only for a server on this host."""
+    parts = urllib.parse.urlsplit(url)
+    local = parts.hostname in ("localhost", "127.0.0.1", "::1")
+    if parts.scheme != "https" and not (parts.scheme == "http" and local):
+        sys.exit(f"{url}: the server URL must start with https://")
+    return url.rstrip("/")
+
+
 def load_settings():
     """Read server and account from config.toml; environment variables win."""
     conf = read_toml(CONFIG_DIR / "config.toml")
@@ -73,11 +82,21 @@ def load_settings():
     if not url or not user:
         sys.exit(f"no server configured: run zmclaude init URL USER, or set url and user "
                  f"in {CONFIG_DIR / 'config.toml'} or ZIMBRA_URL and ZIMBRA_USER")
-    return url.rstrip("/"), user, os.environ.get("ZIMBRA_FROM_NAME", conf.get("from_name", ""))
+    return check_url(url), user, os.environ.get("ZIMBRA_FROM_NAME", conf.get("from_name", ""))
 
 
 class SoapError(Exception):
     pass
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects: urllib would send the auth cookie on to the new host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        sys.exit(f"{URL} redirects to {newurl}; set url to the address that answers")
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
 
 
 def soap(request, body, token=None, ns="urn:zimbraMail"):
@@ -94,7 +113,7 @@ def soap(request, body, token=None, ns="urn:zimbraMail"):
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with OPENER.open(req, timeout=30) as resp:
             data = json.load(resp)
     except urllib.error.HTTPError as err:
         # Zimbra answers a fault with HTTP 500 and a JSON body; a proxy may not
@@ -238,7 +257,7 @@ def cmd_raw(args):
         headers={"Cookie": "ZM_AUTH_TOKEN=" + load_token()},
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with OPENER.open(req, timeout=60) as resp:
             data = resp.read()
     except urllib.error.HTTPError as err:
         if err.code in (401, 403):
@@ -256,7 +275,7 @@ def fetch_rest(path):
     req = urllib.request.Request(f"{URL}/service/home/~/{path}",
                                  headers={"Cookie": "ZM_AUTH_TOKEN=" + load_token()})
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with OPENER.open(req, timeout=120) as resp:
             return resp.read()
     except urllib.error.HTTPError as err:
         if err.code in (401, 403):
@@ -619,7 +638,7 @@ def upload(path):
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with OPENER.open(req, timeout=120) as resp:
             answer = resp.read().decode()
     except urllib.error.HTTPError as err:
         if err.code in (401, 403):
@@ -954,7 +973,7 @@ def cmd_init(args):
     Existing files are left as they are.
     """
     CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    settings = {"url": args.url.rstrip("/"), "user": args.user}
+    settings = {"url": check_url(args.url), "user": args.user}
     if args.from_name:
         settings["from_name"] = args.from_name
     # a JSON string is a valid TOML basic string

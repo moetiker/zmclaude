@@ -20,7 +20,7 @@ zmclaude - read Zimbra mail and save reply drafts through the SOAP API
 by default `~/.config/zmclaude`.
 Environment variables override the file, see **ENVIRONMENT**.
 
-- `url`: Zimbra server, for example `https://mail.example.com`. Required.
+- `url`: Zimbra server, for example `https://mail.example.com`. Required. Plain `http://` is accepted only for `localhost`. A server that redirects is refused, because the auth cookie would follow the redirect; give the address that answers.
 - `user`: Account name, for example `jane@example.com`. Required.
 - `from_name`: Sender name used when an identity sets none.
 - `ticket_systems`: List of addresses of ticketing systems such as RT. The **todo** command always lists mail from them.
