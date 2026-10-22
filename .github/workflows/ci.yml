@@ -1,0 +1,92 @@
+name: CI
+# repo-infra: ci v1
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+
+  # repo-infra: ci-lib v1
+  lib:
+    name: Workflow library tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # The release logic is a library, so it is tested like one. Before this,
+      # the changelog roller was a Perl program inside a YAML string whose only
+      # test was cutting a release.
+      - name: Run the workflow library tests
+        run: node --test .github/workflows/lib/*.test.js
+
+  # repo-infra: ci-python v2
+  ruff:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - run: pip install ruff
+
+      - run: ruff check .
+
+  pytest:
+    name: Python tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - run: pip install pytest
+
+      # What a test suite needs to import is a toolchain concern, not an
+      # infrastructure one (D15): the project declares it and this job only
+      # honours the declaration. Same shape as ci-checkmk-plugin's step; a
+      # repository with no such file gets a no-op.
+      - name: Install the test dependencies the project declares
+        run: |
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements-dev.txt
+          fi
+
+      # Import paths come from the pytest `pythonpath` setting, so this command
+      # is the same in every python repository the standard installs into.
+      - run: python3 -m pytest -q
+
+  # The single context the ruleset requires (spec D2). It exists so branch
+  # protection can name one check that means "this repository's CI passed",
+  # whatever this repository's jobs happen to be. The needs list is generated
+  # by the assembler from the blocks that went into this file.
+  #
+  # `if: always()` is load-bearing. Without it this job is *skipped* when a
+  # dependency fails, and a skipped job reports Success -- so the required
+  # check would go green on a red build. It fails open, silently, and looks
+  # like it is working.
+  ci-passed:
+    if: always()
+    needs: [lib, ruff, pytest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
