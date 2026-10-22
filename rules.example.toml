@@ -9,12 +9,16 @@
 #
 # Sender address, signature and logo come from the Zimbra identities (see
 # identities.json, refreshed by "zmclaude sync"), not from this file.
-# A rule may still name an identity to override the automatic choice.
 #
-# Other keys describe how to answer:
+# "zmclaude draft" and "forward" apply these keys; command-line options win:
+#   identity  = Zimbra identity to write as (--identity)
+#   reply_all = true to reply to all recipients (--all / --no-all)
+#   cc        = addresses added as Cc (--cc adds more)
+#
+# Other keys describe how to answer; "zmclaude rule" prints them:
 #   language, address ("Sie", "du" or "auto": as the incoming mail),
-#   greeting, closing, reply_all, cc, facts (fixed information that may be
-#   used in replies), notes (hints for writing the reply)
+#   greeting, closing, facts (fixed information that may be used in
+#   replies), notes (hints for writing the reply)
 
 [[rule]]
 name = "Course registration"

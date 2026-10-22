@@ -31,7 +31,9 @@ changes zmclaude itself. The full command reference is `docs/manual.md`.
    between them, closing as the rule says). Write it in the language of the
    incoming mail. Do not add the signature or the quote; `draft` does that.
 5. `./zmclaude draft ID body.html` (`--all` to reply to everyone, `--cc`,
-   `--attach`). Show the user the text and the draft ID.
+   `--attach`). `draft` applies the rule's `identity`, `reply_all` and `cc`
+   itself and prints what it took from the rule; pass `--identity` or
+   `--no-all` only to override it. Show the user the text and the draft ID.
 6. Name every statement in the reply you could not verify (prices, dates,
    technical claims). Do not invent facts; take them from the thread, the
    rule's `facts` or the user.

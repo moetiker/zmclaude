@@ -604,12 +604,38 @@ def attachment_parts(part):
     return found
 
 
+def apply_rule(args, m, mode):
+    """Take identity, reply_all and cc of the matching reply rule as defaults.
+
+    Command-line options win: --identity replaces the rule's identity,
+    --no-all its reply_all, and --cc adds to its cc. Returns a description
+    of what came from the rule, or "" when nothing did.
+    """
+    rule = match_rule(m) if m else None
+    if not rule:
+        return ""
+    used = []
+    if args.identity is None and rule.get("identity"):
+        args.identity = rule["identity"]
+        used.append(f"identity {args.identity}")
+    if mode == "reply" and args.all is None and rule.get("reply_all"):
+        args.all = True
+        used.append("reply to all")
+    cc = rule.get("cc", [])
+    cc = [cc] if isinstance(cc, str) else cc
+    if cc:
+        args.cc = args.cc + cc
+        used.append("cc " + ", ".join(cc))
+    return f"rule {rule.get('name', '?')}: " + "; ".join(used) if used else ""
+
+
 def compose(args, mode):
     """Save a draft: mode is "reply", "forward" or "new"."""
     m = get_msg(args.id, rich=True) if mode != "new" else {}
     body = Path(args.bodyfile).read_text(encoding="utf-8")
     body_html = body if args.bodyfile.endswith(".html") else text_to_html(body)
     emails = m.get("e", [])
+    from_rule = apply_rule(args, m, mode)
     ident, idents = pick_identity(m, args.identity)
     attrs = ident.get("_attrs", {})
     own = {USER.lower()} | {i.get("_attrs", {}).get("zimbraPrefFromAddress", "").lower() for i in idents}
@@ -627,7 +653,11 @@ def compose(args, mode):
                     seen.add(e["a"].lower())
                     recipients.append(recipient("c", e))
     recipients += [{"t": "t", "a": a} for a in getattr(args, "to", [])]
-    recipients += [{"t": "c", "a": a} for a in args.cc]
+    present = {r["a"].lower() for r in recipients}
+    for a in args.cc:
+        if a.lower() not in present:
+            present.add(a.lower())
+            recipients.append({"t": "c", "a": a})
     if not recipients and mode != "new":
         sys.exit("no recipients")
     subject = getattr(args, "subject", None) or m.get("su", "")
@@ -742,6 +772,8 @@ def compose(args, mode):
     sender = f"{attrs.get('zimbraPrefFromDisplay', FROM_NAME)} <{attrs.get('zimbraPrefFromAddress', USER)}>"
     print(f"draft {resp['m'][0]['id']} saved to Drafts: {subject}")
     print(f"  from {sender} (identity {ident['name']}) -> {to}")
+    if from_rule:
+        print(f"  {from_rule}")
     for f in args.attach:
         print(f"  attached: {Path(f).name}")
     for _, name, *_ in forwarded:
@@ -920,11 +952,13 @@ def main():
     p = sub.add_parser("draft")
     p.add_argument("id")
     p.add_argument("bodyfile")
-    p.add_argument("--all", action="store_true", help="reply to all")
+    p.add_argument("--all", action=argparse.BooleanOptionalAction,
+                   help="reply to all; default: reply_all of the reply rule, else no")
     p.add_argument("--signature", help='Zimbra signature name, "none" for none; '
                    "default: the reply signature of the identity")
-    p.add_argument("--identity", help="Zimbra identity to reply as; default: the one "
-                   "whose 'when sent to' addresses match the original, else DEFAULT")
+    p.add_argument("--identity", help="Zimbra identity to reply as; default: identity of "
+                   "the reply rule, else the one whose 'when sent to' addresses match the "
+                   "original, else DEFAULT")
     p.add_argument("--update", metavar="DRAFTID", help="replace this existing draft")
     p.add_argument("--cc", action="append", default=[], metavar="ADDR", help="add a Cc recipient")
     p.add_argument("--attach", action="append", default=[], metavar="FILE", help="attach a file")

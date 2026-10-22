@@ -74,10 +74,10 @@ standard error when there are more.
 
 `draft` options:
 
-- `--all`: Reply to all recipients of the original.
-- `--cc ADDR`: Add a Cc recipient. Repeatable.
+- `--all`, `--no-all`: Reply to all recipients of the original, or only to the sender. Defaults to `reply_all` of the reply rule.
+- `--cc ADDR`: Add a Cc recipient, in addition to `cc` of the reply rule. Repeatable.
 - `--attach FILE`: Attach a file. Repeatable.
-- `--identity NAME`: Reply as this Zimbra identity. Defaults to the identity whose "when sent to" addresses match a To or Cc address of the original, else `DEFAULT`.
+- `--identity NAME`: Reply as this Zimbra identity. Defaults to `identity` of the reply rule, else the identity whose "when sent to" addresses match a To or Cc address of the original, else `DEFAULT`.
 - `--signature NAME`: Use this Zimbra signature, `none` for none. Defaults to the reply signature of the identity.
 - `--update DRAFTID`: Replace an existing draft instead of creating a new one.
 

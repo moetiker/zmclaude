@@ -35,13 +35,19 @@ The match keys are:
 - `from_domain`: Sender domains.
 - `subject`: Regular expression on the subject.
 
+**draft** and **forward** apply three keys of the matching rule:
+
+- `identity`: Name of the Zimbra identity to write as. `--identity` overrides it.
+- `reply_all`: `true` replies to all recipients, as `--all` does. **draft** only; `--no-all` overrides it.
+- `cc`: Addresses added as Cc. `--cc` adds further addresses.
+
 The remaining keys describe how to answer:
-`language`, `address` (`Sie`, `du` or `auto`), `greeting`, `closing`, `reply_all`, `cc`,
+`language`, `address` (`Sie`, `du` or `auto`), `greeting`, `closing`,
 `facts` (fixed information a reply may use) and `notes` (hints for writing the reply).
 **zmclaude** prints them with **rule** and does not apply them itself.
 The repository carries a commented example, `rules.example.toml`.
 
-Sender address, signature and signature images come from the Zimbra identities, not from `rules.toml`.
+Sender address, signature and signature images come from the Zimbra identity, not from `rules.toml`.
 
 # DESCRIPTION
 
@@ -90,10 +96,10 @@ Options of **draft**, **forward** and **new**:
 
 - `--to ADDR`: Add a recipient. Repeatable. Required for **forward** and **new**.
 - `--cc ADDR`: Add a Cc recipient. Repeatable.
-- `--all`: Reply to all recipients of the original, except the user's own addresses. **draft** only.
+- `--all`, `--no-all`: Reply to all recipients of the original, except the user's own addresses, or only to the sender. The default is `reply_all` of the reply rule, else only the sender. **draft** only.
 - `--subject TEXT`: Subject. Required for **new**.
 - `--attach FILE`: Attach a file. Repeatable.
-- `--identity NAME`: Write as this Zimbra identity instead of the one chosen automatically.
+- `--identity NAME`: Write as this Zimbra identity. The default is `identity` of the reply rule, else the identity whose "when sent to" addresses match the original, else `DEFAULT`.
 - `--signature NAME`: Use this signature, `none` for none. The default is the reply signature of the identity, for **new** its default signature.
 - `--update DRAFTID`: Replace an existing draft instead of creating a new one.
 
