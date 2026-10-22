@@ -54,12 +54,19 @@ RULES_FILE = CONFIG_DIR / "rules.toml"
 URL = USER = FROM_NAME = None
 
 
+def read_toml(path):
+    """Parse a TOML file; {} when it does not exist."""
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except tomllib.TOMLDecodeError as err:
+        sys.exit(f"{path}: {err}")
+
+
 def load_settings():
     """Read server and account from config.toml; environment variables win."""
-    try:
-        conf = tomllib.loads((CONFIG_DIR / "config.toml").read_text())
-    except FileNotFoundError:
-        conf = {}
+    conf = read_toml(CONFIG_DIR / "config.toml")
     url = os.environ.get("ZIMBRA_URL", conf.get("url", ""))
     user = os.environ.get("ZIMBRA_USER", conf.get("user", ""))
     if not url or not user:
@@ -100,7 +107,7 @@ def soap(request, body, token=None, ns="urn:zimbraMail"):
 
 def load_token():
     try:
-        return TOKEN_FILE.read_text().strip()
+        return TOKEN_FILE.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         sys.exit("not logged in, run: zmclaude login")
 
@@ -141,10 +148,7 @@ def cmd_login(_args):
             ns="urn:zimbraAccount",
         )
     token = resp["authToken"][0]["_content"]
-    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(token)
+    write_private(TOKEN_FILE, token)
     hours = int(resp.get("lifetime", 0)) // 3600000
     print(f"logged in as {USER}, token valid for {hours}h")
 
@@ -254,6 +258,7 @@ def fetch_rest(path):
 
 
 INBOX, TRASH, SENT, DRAFTS = "2", "3", "5", "6"
+TODO_LIMIT = 200
 BULK_HEADERS = ("List-Unsubscribe", "List-Id", "Precedence", "Auto-Submitted", "RT-Ticket")
 
 
@@ -264,10 +269,7 @@ def own_addresses():
 
 
 def read_config():
-    try:
-        return tomllib.loads((CONFIG_DIR / "config.toml").read_text())
-    except FileNotFoundError:
-        return {}
+    return read_toml(CONFIG_DIR / "config.toml")
 
 
 def answers_dir():
@@ -291,16 +293,24 @@ def similar_answers(sender):
     if not folder or not sender:
         return []
     domain = sender.rpartition("@")[2]
-    return sorted(f.name for f in folder.glob("*.md")
-                  if sender in f.read_text().lower() or domain in f.read_text().lower())
+    found = []
+    for f in sorted(folder.glob("*.md")):
+        text = f.read_text(encoding="utf-8", errors="replace").lower()
+        if sender in text or domain in text:
+            found.append(f.name)
+    return found
 
 
 def cmd_todo(args):
     """List inbox mails that still wait for a reply."""
     own = own_addresses()
     tickets = ticket_addresses()
-    hits = call("SearchRequest", {"query": f"in:inbox after:-{args.days}d", "types": "message",
-                                  "sortBy": "dateDesc", "limit": 200}).get("m", [])
+    found = call("SearchRequest", {"query": f"in:inbox after:-{args.days}d", "types": "message",
+                                   "sortBy": "dateDesc", "limit": TODO_LIMIT})
+    hits = found.get("m", [])
+    if found.get("more"):
+        print(f"note: only the newest {TODO_LIMIT} inbox mails of the last {args.days} days "
+              "were checked; use a smaller --days", file=sys.stderr)
     convs = {}
     for m in hits:
         sender = next((e["a"].lower() for e in m.get("e", []) if e["t"] == "f"), "")
@@ -331,7 +341,7 @@ def cmd_todo(args):
                 or bulk.get("Precedence", "").lower() in ("bulk", "list", "junk")
                 or bulk.get("Auto-Submitted", "no").lower() != "no"):
             continue
-        notes = (["ticket"] if ticket else []) + [f"rule: {rule['name']}" if rule else "rule: -"]
+        notes = (["ticket"] if ticket else []) + [f"rule: {rule.get('name', '?')}" if rule else "rule: -"]
         if draft:
             notes.append(f"draft {draft}")
         similar = [] if sender in own or ticket else similar_answers(sender)
@@ -343,12 +353,32 @@ def cmd_todo(args):
         print(f"{'':>10} {' | '.join(notes)}")
 
 
+# no "_____" line: Outlook puts one above the signature as well, and a quote
+# below it starts with a From:/Von: line anyway
+QUOTE_START = re.compile(r"(-{2,} ?(Original|Ursprüngliche|Forwarded).*|From: .*|Von: .*|"
+                         r"Am .* schrieb .*:|On .* wrote:)")
+
+
 def strip_quote(text):
-    """Cut a mail body at the start of the quoted earlier mail."""
-    marker = re.compile(r"^(-{2,} ?(Original|Ursprüngliche|Forwarded).*|_{10,}|From: .*|Von: .*|"
-                        r"Am .* schrieb .*:|On .* wrote:|>.*)$", re.M)
-    found = marker.search(text)
-    return text[:found.start()].rstrip() if found else text.rstrip()
+    """Drop quoted earlier mail from a body, keep the new text.
+
+    Lines starting with ">" become one "> [...]" per block, so answers below
+    or between quotes stay visible. The body is cut at the first attribution
+    or header line that follows new text; one before any new text only
+    introduces a quote and is dropped.
+    """
+    kept = []
+    for line in text.splitlines():
+        if QUOTE_START.fullmatch(line.rstrip()):
+            if any(k.strip() and k != "> [...]" for k in kept):
+                break
+            continue
+        if line.startswith(">"):
+            if not kept or kept[-1] != "> [...]":
+                kept.append("> [...]")
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip("\n").rstrip()
 
 
 def cmd_thread(args):
@@ -572,7 +602,7 @@ def attachment_parts(part):
 def compose(args, mode):
     """Save a draft: mode is "reply", "forward" or "new"."""
     m = get_msg(args.id, rich=True) if mode != "new" else {}
-    body = Path(args.bodyfile).read_text()
+    body = Path(args.bodyfile).read_text(encoding="utf-8")
     body_html = body if args.bodyfile.endswith(".html") else text_to_html(body)
     emails = m.get("e", [])
     ident, idents = pick_identity(m, args.identity)
@@ -728,7 +758,7 @@ def cmd_new(args):
 def write_private(path, text):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text)
 
 
@@ -779,10 +809,7 @@ def cmd_sync(_args):
 
 def match_rule(m):
     """Return the first reply rule in rules.toml that matches message m."""
-    try:
-        rules = tomllib.loads(RULES_FILE.read_text()).get("rule", [])
-    except FileNotFoundError:
-        return None
+    rules = read_toml(RULES_FILE).get("rule", [])
     emails = m.get("e", [])
     to = {e["a"].lower() for e in emails if e["t"] in "tc"}
     sender = next((e["a"].lower() for e in emails if e["t"] == "f"), "")
@@ -794,8 +821,13 @@ def match_rule(m):
             continue
         if "from_domain" in when and sender.rpartition("@")[2] not in {d.lower() for d in when["from_domain"]}:
             continue
-        if "subject" in when and not re.search(when["subject"], m.get("su", "")):
-            continue
+        if "subject" in when:
+            try:
+                if not re.search(when["subject"], m.get("su", "")):
+                    continue
+            except re.error as err:
+                sys.exit(f"{RULES_FILE}: rule {rule.get('name', '?')!r}: "
+                         f"bad subject expression: {err}")
         return rule
     return None
 

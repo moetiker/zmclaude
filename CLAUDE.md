@@ -52,7 +52,9 @@ output shows the MIME tree. A correct reply has the identity's From address,
 
 ## Changing zmclaude
 
-- Python 3.11+, standard library only, one file: `zmclaude`.
+- Python 3.11+, standard library only, one file: `zmclaude`. `pyproject.toml`
+  packages that file as the module `zmclaude.py` for `uv tool install` and
+  `pipx`; keep it free of dependencies.
 - The Zimbra web client is the specification. When a draft differs from what
   the web client produces, have the user create the same mail with the web
   client and compare both with `raw`. The web client's JavaScript can be read

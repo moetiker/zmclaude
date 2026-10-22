@@ -69,7 +69,7 @@ and stores it with **draft**.
 - `search [QUERY] [-n N]`: List messages matching a Zimbra search query, newest first. The default query is `in:inbox`, the default limit 20.
 - `todo [--days N] [--all]`: List inbox mails of the last *N* days (default 14) that still wait for a reply. See **NOTES** for what it skips.
 - `show ID`: Print the headers and the plain-text body of a message.
-- `thread ID [--full]`: Print every message of the conversation of *ID*, oldest first, except those in the trash. Quoted earlier mail is cut unless `--full` is given.
+- `thread ID [--full]`: Print every message of the conversation of *ID*, oldest first, except those in the trash. Unless `--full` is given, each block of lines starting with `>` is shown as `> [...]`, and the text is cut at the first attribution or header line (`On ... wrote:`, `From:`, `-----Original Message-----`) that follows new text.
 - `raw ID [--headers]`: Print the stored MIME message, or only its top-level headers.
 - `attachments ID`: List the attachments of a message with part number, type, size and file name.
 - `save ID PART [DIR]`: Save attachment *PART* of message *ID* into *DIR*, by default the current directory, and print the path.
@@ -141,6 +141,7 @@ and newsletters or automatic mail, recognised by the headers
 Mail from an address in `ticket_systems`, mail with an `RT-Ticket` header
 and mail an explicit reply rule matches is always listed.
 `--all` lists newsletters and automatic mail as well.
+**todo** checks at most the newest 200 inbox mails of the period and prints a note on standard error when there are more.
 
 When a draft is edited in the web client, Zimbra saves it under a new ID.
 `--update` needs the current ID, which **search in:drafts** shows.

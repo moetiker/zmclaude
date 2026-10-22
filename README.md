@@ -14,6 +14,18 @@ client.
 Python 3.11 or later, standard library only. A Zimbra account with access to
 the SOAP API; two-factor authentication is supported.
 
+## Install
+
+Run it from a checkout as `./zmclaude`, or install the `zmclaude` command
+(on Windows this is the only way to get a command):
+
+```sh
+uv tool install git+https://github.com/moetiker/zmclaude
+pipx install git+https://github.com/moetiker/zmclaude
+```
+
+The examples below use `./zmclaude`; with an installed command, drop the `./`.
+
 ## Setup
 
 ```sh
@@ -54,6 +66,8 @@ later sent reply and newsletters or automatic mail (`List-Unsubscribe`,
 `List-Id`, `Precedence`, `Auto-Submitted`). Mail from a ticketing system and
 mail an explicit reply rule matches is always listed. For each mail it names
 the reply rule, an existing draft and logged answers to the same sender.
+It checks at most the newest 200 inbox mails of the period and says so on
+standard error when there are more.
 
 `forward` and `new` take `--cc`, `--attach`, `--identity`, `--signature` and
 `--update` like `draft`. `forward` attaches the attachments of the original.
