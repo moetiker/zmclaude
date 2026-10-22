@@ -1,0 +1,906 @@
+#!/usr/bin/env python3
+"""Find mails, read them and save reply drafts via the Zimbra SOAP API.
+
+Nothing is ever sent: replies are stored in the Drafts folder only.
+
+Usage:
+  zmclaude login                      authenticate, cache the auth token
+  zmclaude search [QUERY] [-n N]      Zimbra search syntax, default "in:inbox"
+  zmclaude show ID                    print headers and plain-text body
+  zmclaude raw ID [--headers]         print the stored MIME message
+  zmclaude sync                       copy identities, signatures, filters to the config directory
+  zmclaude rule ID                    show identity and reply rule for a message
+  zmclaude todo [--days N] [--all]    inbox mails still waiting for a reply
+  zmclaude thread ID [--full]         the whole conversation, quotes cut
+  zmclaude attachments ID             list attachments
+  zmclaude save ID PART [DIR]         save an attachment
+  zmclaude contacts QUERY             look up addresses in contacts and GAL
+  zmclaude free [--start D] [--days N]  free times from the calendar
+  zmclaude forward ID BODYFILE --to ADDR [...]   save a forward draft
+  zmclaude new BODYFILE --to ADDR --subject S [...]  save a new mail draft
+  zmclaude draft ID BODYFILE [--all] [--cc ADDR] [--attach FILE]
+                    [--identity NAME] [--signature NAME] [--update DRAFTID]
+                                     save an HTML reply draft; BODYFILE is an
+                                     HTML fragment if it ends in .html, else text
+
+Configuration, in ZMCLAUDE_CONFIG/config.toml or the environment (wins):
+  url        ZIMBRA_URL        server, for example https://mail.example.com
+  user       ZIMBRA_USER       account, for example jane@example.com
+  from_name  ZIMBRA_FROM_NAME  sender name when the identity sets none
+             ZIMBRA_PASSWORD   used by "login" when no terminal is available
+             ZMCLAUDE_CONFIG    configuration directory, default ~/.config/zmclaude
+"""
+
+import argparse
+import getpass
+import hashlib
+import html
+import json
+import mimetypes
+import os
+import re
+import sys
+import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime
+from pathlib import Path
+
+TOKEN_FILE = Path.home() / ".cache" / "zmclaude" / "token"
+CONFIG_DIR = Path(os.environ.get("ZMCLAUDE_CONFIG", Path.home() / ".config" / "zmclaude"))
+RULES_FILE = CONFIG_DIR / "rules.toml"
+# set by load_settings() in main()
+URL = USER = FROM_NAME = None
+
+
+def load_settings():
+    """Read server and account from config.toml; environment variables win."""
+    try:
+        conf = tomllib.loads((CONFIG_DIR / "config.toml").read_text())
+    except FileNotFoundError:
+        conf = {}
+    url = os.environ.get("ZIMBRA_URL", conf.get("url", ""))
+    user = os.environ.get("ZIMBRA_USER", conf.get("user", ""))
+    if not url or not user:
+        sys.exit(f"set url and user in {CONFIG_DIR / 'config.toml'} "
+                 "or ZIMBRA_URL and ZIMBRA_USER")
+    return url.rstrip("/"), user, os.environ.get("ZIMBRA_FROM_NAME", conf.get("from_name", ""))
+
+
+class SoapError(Exception):
+    pass
+
+
+def soap(request, body, token=None, ns="urn:zimbraMail"):
+    context = {"_jsns": "urn:zimbra", "format": {"type": "js"}}
+    if token:
+        context["authToken"] = token
+    payload = {
+        "Header": {"context": context},
+        "Body": {request: dict(body, _jsns=ns)},
+    }
+    req = urllib.request.Request(
+        URL + "/service/soap",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.load(resp)
+    except urllib.error.HTTPError as err:
+        data = json.load(err)
+    result = data.get("Body", {})
+    if "Fault" in result:
+        fault = result["Fault"]
+        code = fault.get("Detail", {}).get("Error", {}).get("Code", "")
+        raise SoapError(f"{code}: {fault.get('Reason', {}).get('Text', fault)}")
+    return result[request.replace("Request", "Response")]
+
+
+def load_token():
+    try:
+        return TOKEN_FILE.read_text().strip()
+    except FileNotFoundError:
+        sys.exit("not logged in, run: zmclaude login")
+
+
+def call(request, body):
+    try:
+        return soap(request, body, load_token())
+    except SoapError as err:
+        if "AUTH_EXPIRED" in str(err) or "AUTH_REQUIRED" in str(err):
+            sys.exit("auth token expired, run: zmclaude login")
+        raise
+
+
+def prompt(label, secret=False):
+    if sys.stdin.isatty():
+        return getpass.getpass(label) if secret else input(label)
+    return sys.stdin.readline().strip()
+
+
+def cmd_login(_args):
+    password = os.environ.get("ZIMBRA_PASSWORD") or prompt(f"Zimbra password for {USER}: ", True)
+    account = {"by": "name", "_content": USER}
+    resp = soap(
+        "AuthRequest",
+        {"account": account, "password": {"_content": password}},
+        ns="urn:zimbraAccount",
+    )
+    if str(resp.get("twoFactorAuthRequired", {}).get("_content")).lower() == "true":
+        # the first token is only valid to complete the second factor
+        code = prompt("2FA code: ")
+        resp = soap(
+            "AuthRequest",
+            {
+                "account": account,
+                "authToken": {"_content": resp["authToken"][0]["_content"]},
+                "twoFactorCode": {"_content": code},
+            },
+            ns="urn:zimbraAccount",
+        )
+    token = resp["authToken"][0]["_content"]
+    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(token)
+    hours = int(resp.get("lifetime", 0)) // 3600000
+    print(f"logged in as {USER}, token valid for {hours}h")
+
+
+def addr(e):
+    name = e.get("p")
+    return f"{name} <{e['a']}>" if name else e["a"]
+
+
+def when(ms):
+    return datetime.fromtimestamp(int(ms) / 1000).strftime("%Y-%m-%d %H:%M")
+
+
+def cmd_search(args):
+    resp = call("SearchRequest", {
+        "query": args.query, "types": "message", "sortBy": "dateDesc", "limit": args.n,
+    })
+    for m in resp.get("m", []):
+        sender = next((addr(e) for e in m.get("e", []) if e["t"] == "f"), "?")
+        unread = "*" if "u" in m.get("f", "") else " "
+        print(f"{m['id']:>8} {unread} {when(m['d'])}  {sender[:40]:<40}  {m.get('su', '')}")
+
+
+def html_to_text(text):
+    text = re.sub(r"(?is)<(head|script|style).*?</\1>", "", text)
+    text = re.sub(r"(?i)<li[^>]*>", "- ", text)
+    text = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</li>|</tr>|<hr[^>]*>", "\n", text)
+    text = html.unescape(re.sub(r"<[^>]+>", "", text)).replace("\xa0", " ")
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def text_to_html(text):
+    paras = re.split(r"\n\s*\n", text.strip())
+    return "".join(
+        "<p>" + html.escape(para).replace("\n", "<br>") + "</p>" for para in paras
+    )
+
+
+def body_parts(part):
+    """Return (plain, html) body contents found in a MIME part tree."""
+    found = {"text/plain": [], "text/html": []}
+    def walk(p):
+        if p.get("body") and "content" in p and p.get("ct") in found:
+            found[p["ct"]].append(p["content"])
+        for sub in p.get("mp", []):
+            walk(sub)
+    walk(part)
+    return "\n".join(found["text/plain"]), "\n".join(found["text/html"])
+
+
+def body_text(part):
+    """Return the best plain-text body found in a MIME part tree."""
+    plain, rich = body_parts(part)
+    return plain or html_to_text(rich)
+
+
+def get_msg(msg_id, rich=False):
+    req = {"m": {"id": msg_id, "html": int(rich), "neuter": 0, "needExp": 1}}
+    return call("GetMsgRequest", req)["m"][0]
+
+
+def cmd_show(args):
+    m = get_msg(args.id)
+    labels = {"f": "From", "t": "To", "c": "Cc", "r": "Reply-To"}
+    for t, label in labels.items():
+        found = [addr(e) for e in m.get("e", []) if e["t"] == t]
+        if found:
+            print(f"{label}: {', '.join(found)}")
+    print(f"Date: {when(m['d'])}")
+    print(f"Subject: {m.get('su', '')}")
+    print(f"Message-ID: {m.get('mid', '')}")
+    print()
+    print(body_text(m))
+
+
+def cmd_raw(args):
+    # the REST interface serves the stored MIME message; SOAP has no call for it
+    req = urllib.request.Request(
+        f"{URL}/service/home/~/?id={urllib.parse.quote(args.id)}",
+        headers={"Cookie": "ZM_AUTH_TOKEN=" + load_token()},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = resp.read()
+    except urllib.error.HTTPError as err:
+        if err.code in (401, 403):
+            sys.exit("auth token expired, run: zmclaude login")
+        if err.code == 404:
+            sys.exit(f"no such message: {args.id}")
+        sys.exit(f"cannot fetch message {args.id}: HTTP {err.code}")
+    if args.headers:
+        data = re.split(rb"\r?\n\r?\n", data, maxsplit=1)[0] + b"\n"
+    sys.stdout.buffer.write(data)
+
+
+def fetch_rest(path):
+    """GET a path below /service/home/~/ with the auth cookie."""
+    req = urllib.request.Request(f"{URL}/service/home/~/{path}",
+                                 headers={"Cookie": "ZM_AUTH_TOKEN=" + load_token()})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as err:
+        if err.code in (401, 403):
+            sys.exit("auth token expired, run: zmclaude login")
+        sys.exit(f"cannot fetch {path}: HTTP {err.code}")
+
+
+INBOX, TRASH, SENT, DRAFTS = "2", "3", "5", "6"
+BULK_HEADERS = ("List-Unsubscribe", "List-Id", "Precedence", "Auto-Submitted", "RT-Ticket")
+
+
+def own_addresses():
+    idents = soap("GetIdentitiesRequest", {}, load_token(), ns="urn:zimbraAccount")["identity"]
+    return {USER.lower()} | {i.get("_attrs", {}).get("zimbraPrefFromAddress", "").lower()
+                             for i in idents} - {""}
+
+
+def read_config():
+    try:
+        return tomllib.loads((CONFIG_DIR / "config.toml").read_text())
+    except FileNotFoundError:
+        return {}
+
+
+def answers_dir():
+    folder = read_config().get("answers_dir")
+    return Path(folder).expanduser() if folder else None
+
+
+def ticket_addresses():
+    """Addresses of ticketing systems (config key ticket_systems).
+
+    Ticket mail arrives from a shared address that may also be one of the
+    user's identities and is often marked "Precedence: bulk"; it still waits
+    for an answer like any other mail.
+    """
+    return {a.lower() for a in read_config().get("ticket_systems", [])}
+
+
+def similar_answers(sender):
+    """Return names of logged answers that mention the sender or their domain."""
+    folder = answers_dir()
+    if not folder or not sender:
+        return []
+    domain = sender.rpartition("@")[2]
+    return sorted(f.name for f in folder.glob("*.md")
+                  if sender in f.read_text().lower() or domain in f.read_text().lower())
+
+
+def cmd_todo(args):
+    """List inbox mails that still wait for a reply."""
+    own = own_addresses()
+    tickets = ticket_addresses()
+    hits = call("SearchRequest", {"query": f"in:inbox after:-{args.days}d", "types": "message",
+                                  "sortBy": "dateDesc", "limit": 200}).get("m", [])
+    convs = {}
+    for m in hits:
+        sender = next((e["a"].lower() for e in m.get("e", []) if e["t"] == "f"), "")
+        if "r" in m.get("f", ""):
+            continue
+        cid = m.get("cid", "")
+        # a later sent mail or a draft in the same conversation answers it
+        if cid and not cid.startswith("-"):
+            if cid not in convs:
+                convs[cid] = call("GetConvRequest", {"c": {"id": cid, "fetch": "none"}})["c"][0].get("m", [])
+            later = [x for x in convs[cid] if int(x["d"]) > int(m["d"]) and x.get("l") in (SENT, DRAFTS)]
+            if any(x.get("l") == SENT for x in later):
+                continue
+            draft = next((x["id"] for x in later if x.get("l") == DRAFTS), None)
+        else:
+            draft = None
+        full = call("GetMsgRequest", {"m": {"id": m["id"], "header": [{"n": h} for h in BULK_HEADERS]}})["m"][0]
+        bulk = full.get("_attrs", {})
+        rule = match_rule(full)
+        ticket = sender in tickets or bool(bulk.get("RT-Ticket"))
+        # ticket mail and mail an explicit reply rule matches is never skipped
+        # as the user's own or as bulk mail
+        wanted = ticket or bool(rule and rule.get("match"))
+        if sender in own and not wanted:
+            continue
+        if not args.all and not wanted and (
+                bulk.get("List-Unsubscribe") or bulk.get("List-Id")
+                or bulk.get("Precedence", "").lower() in ("bulk", "list", "junk")
+                or bulk.get("Auto-Submitted", "no").lower() != "no"):
+            continue
+        notes = (["ticket"] if ticket else []) + [f"rule: {rule['name']}" if rule else "rule: -"]
+        if draft:
+            notes.append(f"draft {draft}")
+        similar = [] if sender in own or ticket else similar_answers(sender)
+        if similar:
+            notes.append("similar: " + ", ".join(similar))
+        unread = "*" if "u" in m.get("f", "") else " "
+        sender_s = next((addr(e) for e in m.get("e", []) if e["t"] == "f"), "?")
+        print(f"{m['id']:>8} {unread} {when(m['d'])}  {sender_s[:38]:<38}  {m.get('su', '')}")
+        print(f"{'':>10} {' | '.join(notes)}")
+
+
+def strip_quote(text):
+    """Cut a mail body at the start of the quoted earlier mail."""
+    marker = re.compile(r"^(-{2,} ?(Original|Ursprüngliche|Forwarded).*|_{10,}|From: .*|Von: .*|"
+                        r"Am .* schrieb .*:|On .* wrote:|>.*)$", re.M)
+    found = marker.search(text)
+    return text[:found.start()].rstrip() if found else text.rstrip()
+
+
+def cmd_thread(args):
+    m = get_msg(args.id)
+    cid = m.get("cid", "")
+    if not cid or cid.startswith("-"):
+        msgs = [m]
+    else:
+        conv = call("GetConvRequest", {"c": {"id": cid, "fetch": "all", "html": 0, "needExp": 1}})["c"][0]
+        msgs = [x for x in conv.get("m", []) if x.get("l") != TRASH]
+    for x in sorted(msgs, key=lambda x: int(x["d"])):
+        folder = {SENT: "sent", DRAFTS: "draft"}.get(x.get("l"), "")
+        sender = next((addr(e) for e in x.get("e", []) if e["t"] == "f"), "?")
+        to = ", ".join(addr(e) for e in x.get("e", []) if e["t"] in "tc")
+        files = [name for _, name, *_ in attachment_parts(x)]
+        print(f"===== {x['id']}  {when(x['d'])}  {folder}")
+        print(f"From: {sender}\nTo: {to}\nSubject: {x.get('su', '')}")
+        if files:
+            print(f"Attachments: {', '.join(files)}")
+        print()
+        text = body_text(x)
+        print(text.rstrip() if args.full else strip_quote(text))
+        print()
+
+
+def cmd_attachments(args):
+    for part, name, ctype, size in attachment_parts(get_msg(args.id)):
+        print(f"{part:>6}  {ctype:<30} {int(size or 0):>10}  {name}")
+
+
+def cmd_save(args):
+    parts = {part: name for part, name, *_ in attachment_parts(get_msg(args.id))}
+    if args.part not in parts:
+        sys.exit(f"message {args.id} has no attachment part {args.part}")
+    name = Path(parts[args.part] or f"part-{args.part}").name
+    target = Path(args.dir) / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(fetch_rest(f"?id={urllib.parse.quote(args.id)}&part={urllib.parse.quote(args.part)}"))
+    print(target)
+
+
+def cmd_contacts(args):
+    resp = call("AutoCompleteRequest", {"name": args.query, "limit": 20})
+    for match in resp.get("match", []):
+        print(f"{match.get('type', ''):<8} {html.unescape(match.get('email', match.get('display', '')))}")
+
+
+def cmd_free(args):
+    start = datetime.strptime(args.start, "%Y-%m-%d") if args.start else \
+        datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start.timestamp() + args.days * 86400
+    resp = call("GetFreeBusyRequest", {"s": int(start.timestamp() * 1000), "e": int(end * 1000),
+                                       "uid": USER})
+    busy = []
+    for usr in resp.get("usr", []):
+        for kind in ("b", "t", "u", "n"):
+            busy += [(int(x["s"]) / 1000, int(x["e"]) / 1000) for x in usr.get(kind, [])]
+    day = start
+    while day.timestamp() < end:
+        if day.weekday() < 5 or args.weekends:
+            lo = day.replace(hour=args.from_hour).timestamp()
+            hi = day.replace(hour=args.to_hour).timestamp()
+            blocks = sorted((max(s, lo), min(e, hi)) for s, e in busy if s < hi and e > lo)
+            free, cur = [], lo
+            for s, e in blocks:
+                if s > cur:
+                    free.append((cur, s))
+                cur = max(cur, e)
+            if cur < hi:
+                free.append((cur, hi))
+            fmt = lambda t: datetime.fromtimestamp(t).strftime("%H:%M")
+            slots = ", ".join(f"{fmt(s)}-{fmt(e)}" for s, e in free if e - s >= args.min * 60)
+            print(f"{day:%a %Y-%m-%d}  free: {slots or '-'}")
+        day = datetime.fromtimestamp(day.timestamp() + 86400).replace(hour=0, minute=0)
+
+
+def get_prefs():
+    return soap("GetPrefsRequest", {}, load_token(), ns="urn:zimbraAccount").get("_attrs", {})
+
+
+def signature(name, sig_id):
+    """Return (id, plain, html) of a Zimbra signature.
+
+    name None means the signature with sig_id, "none" means none.
+    """
+    if name == "none" or (name is None and not sig_id):
+        return None, "", ""
+    sigs = soap("GetSignaturesRequest", {}, load_token(), ns="urn:zimbraAccount")
+    for sig in sigs.get("signature", []):
+        if sig["name"] == name or (name is None and sig["id"] == sig_id):
+            content = {c["type"]: c["_content"] for c in sig.get("content", [])}
+            if "text/html" in content:
+                return sig["id"], html_to_text(content["text/html"]), content["text/html"]
+            plain = content.get("text/plain", "")
+            return sig["id"], plain, text_to_html(plain)
+    if name is None:
+        return None, "", ""
+    sys.exit(f"no signature named {name!r}")
+
+
+def pick_identity(m, name):
+    """Return the identity to reply to message m with, as the web client does.
+
+    An identity whose "when sent to" addresses include a To or Cc address
+    of m wins, otherwise the default identity is used.
+    """
+    idents = soap("GetIdentitiesRequest", {}, load_token(), ns="urn:zimbraAccount")["identity"]
+    if name:
+        for ident in idents:
+            if ident["name"] == name:
+                return ident, idents
+        sys.exit(f"no identity named {name!r}")
+    to = {e["a"].lower() for e in m.get("e", []) if e["t"] in "tc"}
+    for ident in idents:
+        attrs = ident.get("_attrs", {})
+        if attrs.get("zimbraPrefWhenSentToEnabled") == "TRUE":
+            sent_to = attrs.get("zimbraPrefWhenSentToAddresses", [])
+            sent_to = [sent_to] if isinstance(sent_to, str) else sent_to
+            if to & {a.lower() for a in sent_to}:
+                return ident, idents
+    return next(i for i in idents if i["name"] == "DEFAULT"), idents
+
+
+def embed_doc_images(sig_html):
+    """Point Briefcase images of a signature at inline parts.
+
+    A stored signature refers to its images as dfsrc="doc:<path>". The web
+    client gives each a content id and a doc attribute before saving, and
+    SaveDraftRequest then attaches the Briefcase file under that id. Returns
+    the rewritten html and {content-id: Briefcase path}.
+    """
+    found = {}
+    def swap(tag):
+        doc = re.search(r'(?i)\bdfsrc="doc:([^"]+)"', tag.group(0))
+        if not doc:
+            return tag.group(0)
+        path = html.unescape(doc.group(1))
+        cid = hashlib.sha1(path.encode()).hexdigest() + "@zimbra"
+        found[cid] = path
+        rest = re.sub(r'(?i)\s(src|dfsrc|data-mce-src)="[^"]*"', "", tag.group(0)[4:])
+        return f'<img src="cid:{cid}" doc="{html.escape(path)}"{rest}'
+    return re.sub(r"(?i)<img[^>]*>", swap, sig_html), found
+
+
+# labels and date format of the quoted header block, as the web client
+# writes them for the user's locale
+QUOTE_LABELS = {
+    "de": ("Von", "An", "Cc", "Gesendet", "Betreff"),
+    "en": ("From", "To", "Cc", "Sent", "Subject"),
+}
+WEEKDAYS = {
+    "de": ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"],
+    "en": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+}
+MONTHS = {
+    "de": ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
+           "August", "September", "Oktober", "November", "Dezember"],
+    "en": ["January", "February", "March", "April", "May", "June", "July",
+           "August", "September", "October", "November", "December"],
+}
+
+
+def long_date(ms, lang):
+    d = datetime.fromtimestamp(int(ms) / 1000)
+    day, month = WEEKDAYS[lang][d.weekday()], MONTHS[lang][d.month - 1]
+    if lang == "de":
+        return f"{day}, {d.day}. {month} {d.year} {d:%H:%M:%S}"
+    return f"{day}, {month} {d.day}, {d.year} {d.hour % 12 or 12}:{d:%M:%S %p}"
+
+
+def quoted_addr(e):
+    return f'"{e["p"]}" <{e["a"]}>' if e.get("p") else e["a"]
+
+
+def inline_parts(part):
+    """Return {content-id: part number} of the parts in a MIME part tree."""
+    found = {}
+    def walk(p):
+        if p.get("ci"):
+            found[p["ci"].strip("<>")] = p["part"]
+        for sub in p.get("mp", []):
+            walk(sub)
+    walk(part)
+    return found
+
+
+def upload(path):
+    """Upload a file for use as attachment, return its upload id."""
+    data = Path(path).read_bytes()
+    ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    name = urllib.parse.quote(Path(path).name)
+    req = urllib.request.Request(
+        URL + "/service/upload?fmt=raw",
+        data=data,
+        headers={
+            "Cookie": "ZM_AUTH_TOKEN=" + load_token(),
+            "Content-Type": ctype,
+            "Content-Disposition": f"attachment; filename*=UTF-8''{name}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        answer = resp.read().decode()
+    found = re.match(r"\s*(\d+),'[^']*','([^']+)'", answer)
+    if not found or found.group(1) != "200":
+        sys.exit(f"upload of {path} failed: {answer.strip()}")
+    return found.group(2)
+
+
+def attachment_parts(part):
+    """Return [(part number, filename, content type, size)] of real attachments."""
+    found = []
+    def walk(p):
+        if p.get("cd") == "attachment" or (p.get("filename") and not p.get("body")):
+            found.append((p["part"], p.get("filename", ""), p.get("ct", ""), p.get("s", 0)))
+        for sub in p.get("mp", []):
+            walk(sub)
+    walk(part)
+    return found
+
+
+def compose(args, mode):
+    """Save a draft: mode is "reply", "forward" or "new"."""
+    m = get_msg(args.id, rich=True) if mode != "new" else {}
+    body = Path(args.bodyfile).read_text()
+    body_html = body if args.bodyfile.endswith(".html") else text_to_html(body)
+    emails = m.get("e", [])
+    ident, idents = pick_identity(m, args.identity)
+    attrs = ident.get("_attrs", {})
+    own = {USER.lower()} | {i.get("_attrs", {}).get("zimbraPrefFromAddress", "").lower() for i in idents}
+    # an empty "p" would become To: "" <addr>, so leave it out when there is no name
+    def recipient(t, e):
+        return {"t": t, "a": e["a"], **({"p": e["p"]} if e.get("p") else {})}
+    recipients = []
+    if mode == "reply":
+        reply_to = [e for e in emails if e["t"] == "r"] or [e for e in emails if e["t"] == "f"]
+        recipients = [recipient("t", e) for e in reply_to]
+        if args.all:
+            seen = own | {e["a"].lower() for e in reply_to}
+            for e in emails:
+                if e["t"] in "tc" and e["a"].lower() not in seen:
+                    seen.add(e["a"].lower())
+                    recipients.append(recipient("c", e))
+    recipients += [{"t": "t", "a": a} for a in getattr(args, "to", [])]
+    recipients += [{"t": "c", "a": a} for a in args.cc]
+    if not recipients and mode != "new":
+        sys.exit("no recipients")
+    subject = getattr(args, "subject", None) or m.get("su", "")
+    if mode == "reply" and not re.match(r"(?i)(re|aw|antw):", subject):
+        subject = "Re: " + subject
+    if mode == "forward" and not re.match(r"(?i)(fwd|fw|wg):", subject):
+        subject = "Fwd: " + subject
+
+    prefs = get_prefs()
+    sig_id, sig_plain, sig_html = signature(
+        args.signature,
+        attrs.get("zimbraPrefDefaultSignatureId") if mode == "new"
+        else attrs.get("zimbraPrefForwardReplySignatureId") or attrs.get("zimbraPrefDefaultSignatureId"),
+    )
+    font = (f"font-family: {prefs.get('zimbraPrefHtmlEditorDefaultFontFamily', 'arial, helvetica, sans-serif')}; "
+            f"font-size: {prefs.get('zimbraPrefHtmlEditorDefaultFontSize', '12pt')}; "
+            f"color: {prefs.get('zimbraPrefHtmlEditorDefaultFontColor', '#000000')}")
+    sig_html, sig_images = embed_doc_images(sig_html)
+    sig_attr = f' id="{sig_id}"' if sig_id else ""
+    # same structure as a web client reply, minus its blank lines around the
+    # signature
+    rich = (f'<html><body><div style="{font}"><div>{body_html}</div>'
+            + (f'<div{sig_attr} data-marker="__SIG_PRE__">{sig_html}</div>' if sig_html else ""))
+    plain = html_to_text(body_html) + (f"\n\n{sig_plain}" if sig_plain else "")
+    images = {}
+    if m:
+        lang = "de" if prefs.get("zimbraPrefLocale", "en").startswith("de") else "en"
+        labels = QUOTE_LABELS[lang]
+        headers = []
+        for t, label in zip("ftc", labels):
+            found = [quoted_addr(e) for e in emails if e["t"] == t]
+            if found:
+                headers.append((label, ", ".join(found)))
+        headers.append((labels[3], long_date(m.get("sd", m["d"]), lang)))
+        headers.append((labels[4], m.get("su", "")))
+
+        orig_plain, orig_html = body_parts(m)
+        styles = ""
+        if orig_html:
+            head = re.search(r"(?is)<head.*?</head>", orig_html)
+            if head:
+                styles = "".join(re.findall(r"(?is)<style.*?</style>", head.group(0)))
+            inner = re.search(r"(?is)<body[^>]*>(.*)</body>", orig_html)
+            orig_html = re.sub(r"(?is)<head.*?</head>", "", inner.group(1) if inner else orig_html)
+        else:
+            orig_html = html.escape(orig_plain).replace("\n", "<br>")
+        if not orig_plain:
+            orig_plain = html_to_text(orig_html)
+        # carry over the inline images the quoted original refers to
+        images = {cid: part for cid, part in inline_parts(m).items() if f"cid:{cid}" in orig_html}
+        quote = ('<blockquote style="border-left:2px solid #1010FF;margin-left:5px;padding-left:5px;'
+                 'color:#000;font-weight:normal;font-style:normal;text-decoration:none;'
+                 'font-family:Helvetica,Arial,sans-serif;font-size:12pt;">')
+        head_html = "".join(f"<b>{k}: </b>{html.escape(v)}<br>" for k, v in headers)
+        rich += ('<hr id="zwchr" data-marker="__DIVIDER__">'
+                 f'<div data-marker="__HEADERS__">{quote}{head_html}</blockquote></div>'
+                 + (f"<div>{styles}</div>" if styles else "")
+                 + f'<div data-marker="__QUOTED_TEXT__">{quote}{orig_html}</blockquote></div>')
+        prefix = prefs.get("zimbraPrefForwardReplyPrefixChar", ">") + " "
+        head_plain = "\n".join(prefix + f"{k}: {v}" for k, v in headers)
+        quoted = "\n".join(prefix + line for line in orig_plain.splitlines())
+        plain += f"\n\n{head_plain}\n\n{quoted}"
+    rich += "</div></body></html>"
+    plain += "\n"
+
+    html_part = {"ct": "text/html", "content": {"_content": rich}}
+    # images of the original come from its parts, signature images from the
+    # Briefcase, the same two sources the web client uses
+    related = [
+        {"ci": cid, "attach": {"mp": [{"mid": m["id"], "part": part}]}}
+        for cid, part in images.items()
+    ] + [
+        {"ci": cid, "attach": {"doc": [{"path": path, "optional": 1}]}}
+        for cid, path in sig_images.items()
+    ]
+    if related:
+        html_part = {"ct": "multipart/related", "mp": [html_part] + related}
+
+    draft = {
+        "su": {"_content": subject},
+        "idnt": ident["id"],
+        "e": [{"t": "f", "a": attrs.get("zimbraPrefFromAddress", USER),
+               "p": attrs.get("zimbraPrefFromDisplay", FROM_NAME)}]
+             + ([{"t": "r", "a": attrs["zimbraPrefReplyToAddress"],
+                  "p": attrs.get("zimbraPrefReplyToDisplay", "")}]
+                if attrs.get("zimbraPrefReplyToEnabled") == "TRUE" else [])
+             + recipients,
+        "mp": [{"ct": "multipart/alternative", "mp": [
+            {"ct": "text/plain", "content": {"_content": plain}},
+            html_part,
+        ]}],
+    }
+    if m:
+        draft["origid"] = m["id"]
+        draft["rt"] = "r" if mode == "reply" else "w"
+    if args.update:
+        draft["id"] = args.update
+    attach = {}
+    if args.attach:
+        attach["aid"] = ",".join(upload(f) for f in args.attach)
+    forwarded = attachment_parts(m) if mode == "forward" else []
+    if forwarded:
+        attach["mp"] = [{"mid": m["id"], "part": part} for part, *_ in forwarded]
+    if attach:
+        draft["attach"] = attach
+    # Zimbra refuses a References header here and builds it from origid and
+    # In-Reply-To when the draft is sent, as it does for web client replies
+    if mode == "reply" and m.get("mid"):
+        draft["irt"] = {"_content": m["mid"]}
+    resp = call("SaveDraftRequest", {"m": draft})
+    to = ", ".join(addr(r) for r in recipients)
+    sender = f"{attrs.get('zimbraPrefFromDisplay', FROM_NAME)} <{attrs.get('zimbraPrefFromAddress', USER)}>"
+    print(f"draft {resp['m'][0]['id']} saved to Drafts: {subject}")
+    print(f"  from {sender} (identity {ident['name']}) -> {to}")
+    for f in args.attach:
+        print(f"  attached: {Path(f).name}")
+    for _, name, *_ in forwarded:
+        print(f"  attached from original: {name}")
+
+
+def cmd_draft(args):
+    compose(args, "reply")
+
+
+def cmd_forward(args):
+    compose(args, "forward")
+
+
+def cmd_new(args):
+    compose(args, "new")
+
+
+def write_private(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+
+
+def cmd_sync(_args):
+    """Copy identities, signatures, filter rules and compose prefs from Zimbra.
+
+    rules.toml in the same directory holds the reply rules and is never
+    touched here.
+    """
+    tok = load_token()
+    idents = soap("GetIdentitiesRequest", {}, tok, ns="urn:zimbraAccount")["identity"]
+    sigs = soap("GetSignaturesRequest", {}, tok, ns="urn:zimbraAccount").get("signature", [])
+    names = {sig["id"]: sig["name"] for sig in sigs}
+    keys = ("zimbraPrefFromAddress", "zimbraPrefFromDisplay", "zimbraPrefReplyToEnabled",
+            "zimbraPrefReplyToAddress", "zimbraPrefWhenSentToEnabled",
+            "zimbraPrefWhenSentToAddresses")
+    out = []
+    for ident in idents:
+        attrs = ident.get("_attrs", {})
+        entry = {"name": ident["name"], "id": ident["id"]}
+        entry.update({k: attrs[k] for k in keys if k in attrs})
+        sig = attrs.get("zimbraPrefForwardReplySignatureId") or attrs.get("zimbraPrefDefaultSignatureId")
+        if sig:
+            entry["replySignature"] = names.get(sig, sig)
+        out.append(entry)
+    write_private(CONFIG_DIR / "identities.json", json.dumps(out, indent=2, ensure_ascii=False) + "\n")
+
+    sig_dir = CONFIG_DIR / "signatures"
+    for sig in sigs:
+        for c in sig.get("content", []):
+            ext = "html" if c["type"] == "text/html" else "txt"
+            write_private(sig_dir / f"{sig['name']}.{ext}", c["_content"] + "\n")
+
+    filters = soap("GetFilterRulesRequest", {}, tok).get("filterRules", [{}])[0].get("filterRule", [])
+    write_private(CONFIG_DIR / "filters.json", json.dumps(filters, indent=2, ensure_ascii=False) + "\n")
+
+    prefs = get_prefs()
+    wanted = ("zimbraPrefLocale", "zimbraPrefComposeFormat", "zimbraPrefHtmlEditorDefaultFontFamily",
+              "zimbraPrefHtmlEditorDefaultFontSize", "zimbraPrefHtmlEditorDefaultFontColor",
+              "zimbraPrefReplyIncludeOriginalText", "zimbraPrefForwardReplyPrefixChar",
+              "zimbraPrefMailSignatureStyle", "zimbraPrefTimeZoneId")
+    write_private(CONFIG_DIR / "prefs.json",
+                  json.dumps({k: prefs[k] for k in wanted if k in prefs}, indent=2) + "\n")
+    print(f"synced {len(out)} identities, {len(sigs)} signatures, {len(filters)} filter rules to {CONFIG_DIR}")
+    if not RULES_FILE.exists():
+        print(f"no reply rules yet: {RULES_FILE}")
+
+
+def match_rule(m):
+    """Return the first reply rule in rules.toml that matches message m."""
+    try:
+        rules = tomllib.loads(RULES_FILE.read_text()).get("rule", [])
+    except FileNotFoundError:
+        return None
+    emails = m.get("e", [])
+    to = {e["a"].lower() for e in emails if e["t"] in "tc"}
+    sender = next((e["a"].lower() for e in emails if e["t"] == "f"), "")
+    for rule in rules:
+        when = rule.get("match", {})
+        if "to" in when and not to & {a.lower() for a in when["to"]}:
+            continue
+        if "from" in when and sender not in {a.lower() for a in when["from"]}:
+            continue
+        if "from_domain" in when and sender.rpartition("@")[2] not in {d.lower() for d in when["from_domain"]}:
+            continue
+        if "subject" in when and not re.search(when["subject"], m.get("su", "")):
+            continue
+        return rule
+    return None
+
+
+def cmd_rule(args):
+    m = get_msg(args.id)
+    ident, _ = pick_identity(m, None)
+    attrs = ident.get("_attrs", {})
+    print(f"identity: {ident['name']} ({attrs.get('zimbraPrefFromDisplay', '')} "
+          f"<{attrs.get('zimbraPrefFromAddress', USER)}>)")
+    rule = match_rule(m)
+    if rule is None:
+        print(f"reply rule: none matches ({RULES_FILE})")
+        return
+    print(f"reply rule: {rule.get('name', '?')}")
+    for key, value in rule.items():
+        if key not in ("name", "match"):
+            if isinstance(value, list):
+                print(f"  {key}:")
+                for item in value:
+                    print(f"    - {item}")
+            else:
+                print(f"  {key}: {str(value).replace(chr(10), ' / ')}")
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="zmclaude", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("login").set_defaults(func=cmd_login)
+    p = sub.add_parser("search")
+    p.add_argument("query", nargs="?", default="in:inbox")
+    p.add_argument("-n", type=int, default=20)
+    p.set_defaults(func=cmd_search)
+    p = sub.add_parser("show")
+    p.add_argument("id")
+    p.set_defaults(func=cmd_show)
+    sub.add_parser("sync").set_defaults(func=cmd_sync)
+    p = sub.add_parser("rule")
+    p.add_argument("id")
+    p.set_defaults(func=cmd_rule)
+    p = sub.add_parser("raw")
+    p.add_argument("id")
+    p.add_argument("--headers", action="store_true", help="print only the top-level headers")
+    p.set_defaults(func=cmd_raw)
+    p = sub.add_parser("todo", help="inbox mails still waiting for a reply")
+    p.add_argument("--days", type=int, default=14)
+    p.add_argument("--all", action="store_true", help="include newsletters and automatic mail")
+    p.set_defaults(func=cmd_todo)
+    p = sub.add_parser("thread", help="the whole conversation of a message")
+    p.add_argument("id")
+    p.add_argument("--full", action="store_true", help="keep quoted text")
+    p.set_defaults(func=cmd_thread)
+    p = sub.add_parser("attachments")
+    p.add_argument("id")
+    p.set_defaults(func=cmd_attachments)
+    p = sub.add_parser("save", help="save an attachment")
+    p.add_argument("id")
+    p.add_argument("part")
+    p.add_argument("dir", nargs="?", default=".")
+    p.set_defaults(func=cmd_save)
+    p = sub.add_parser("contacts", help="look up addresses in contacts and GAL")
+    p.add_argument("query")
+    p.set_defaults(func=cmd_contacts)
+    p = sub.add_parser("free", help="free times from the calendar")
+    p.add_argument("--start", metavar="YYYY-MM-DD")
+    p.add_argument("--days", type=int, default=7)
+    p.add_argument("--from-hour", type=int, default=8)
+    p.add_argument("--to-hour", type=int, default=18)
+    p.add_argument("--min", type=int, default=30, help="shortest slot in minutes")
+    p.add_argument("--weekends", action="store_true")
+    p.set_defaults(func=cmd_free)
+    for name, func, help_text in (("forward", cmd_forward, "save a forward draft"),
+                                  ("new", cmd_new, "save a new mail draft")):
+        p = sub.add_parser(name, help=help_text)
+        if name == "forward":
+            p.add_argument("id")
+        p.add_argument("bodyfile")
+        p.add_argument("--to", action="append", default=[], metavar="ADDR", required=True)
+        p.add_argument("--cc", action="append", default=[], metavar="ADDR")
+        p.add_argument("--subject", required=name == "new")
+        p.add_argument("--attach", action="append", default=[], metavar="FILE")
+        p.add_argument("--identity")
+        p.add_argument("--signature")
+        p.add_argument("--update", metavar="DRAFTID")
+        p.set_defaults(func=func, id=None)
+    p = sub.add_parser("draft")
+    p.add_argument("id")
+    p.add_argument("bodyfile")
+    p.add_argument("--all", action="store_true", help="reply to all")
+    p.add_argument("--signature", help='Zimbra signature name, "none" for none; '
+                   "default: the reply signature of the identity")
+    p.add_argument("--identity", help="Zimbra identity to reply as; default: the one "
+                   "whose 'when sent to' addresses match the original, else DEFAULT")
+    p.add_argument("--update", metavar="DRAFTID", help="replace this existing draft")
+    p.add_argument("--cc", action="append", default=[], metavar="ADDR", help="add a Cc recipient")
+    p.add_argument("--attach", action="append", default=[], metavar="FILE", help="attach a file")
+    p.set_defaults(func=cmd_draft)
+    args = parser.parse_args()
+    global URL, USER, FROM_NAME
+    URL, USER, FROM_NAME = load_settings()
+    try:
+        args.func(args)
+    except SoapError as err:
+        sys.exit(f"zimbra error: {err}")
+
+
+if __name__ == "__main__":
+    main()
