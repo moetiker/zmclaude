@@ -29,15 +29,13 @@ The examples below use `./zmclaude`; with an installed command, drop the `./`.
 ## Setup
 
 ```sh
-mkdir -p ~/.config/zmclaude && chmod 700 ~/.config/zmclaude
-cat > ~/.config/zmclaude/config.toml <<'EOF'
-url = "https://mail.example.com"
-user = "jane@example.com"
-EOF
+./zmclaude init https://mail.example.com jane@example.com
 ./zmclaude login
 ./zmclaude sync
-cp rules.example.toml ~/.config/zmclaude/rules.toml
 ```
+
+`init` writes `config.toml` and a `rules.toml` with a Default rule and
+commented examples; it never overwrites an existing file.
 
 ## Usage
 
@@ -91,7 +89,7 @@ text otherwise.
 `~/.config/zmclaude/` (or `ZMCLAUDE_CONFIG`) holds:
 
 - `config.toml`: `url`, `user` and optionally `from_name`, `ticket_systems` (addresses of ticketing systems such as RT, whose mail `todo` always lists) `answers_dir` (a folder of Markdown files with earlier answers that `todo` searches by sender and domain) and `freemail_domains` (more domains such as gmail.com where `todo` does not search by domain).
-- `rules.toml`: Reply rules: tone, greeting, closing and fixed facts per recipient address, sender or subject. See `rules.example.toml`. `sync` never touches it.
+- `rules.toml`: Reply rules: tone, greeting, closing and fixed facts per recipient address, sender or subject. `init` writes a first version with commented examples; `sync` never touches it.
 - `identities.json`, `signatures/`, `filters.json`, `prefs.json`: Copies from Zimbra, rewritten by `sync`.
 
 Environment variables override `config.toml`:

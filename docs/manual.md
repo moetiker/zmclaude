@@ -47,7 +47,7 @@ The remaining keys describe how to answer:
 `address` (`Sie`, `du` or `auto`), `greeting`, `closing`,
 `facts` (fixed information a reply may use) and `notes` (hints for writing the reply).
 **zmclaude** prints them with **rule** and does not apply them itself.
-The repository carries a commented example, `rules.example.toml`.
+**init** writes a `rules.toml` with a Default rule and commented examples.
 
 Sender address, signature and signature images come from the Zimbra identity, not from `rules.toml`.
 
@@ -73,6 +73,7 @@ and stores it with **draft**.
 
 # COMMANDS
 
+- `init URL USER [--from-name NAME]`: Create the configuration directory with mode 700, `config.toml` with *URL* and *USER*, and `rules.toml` with a Default rule and commented examples. Existing files are left as they are.
 - `login`: Ask for the password and, if two-factor authentication is on, the code; store the auth token.
 - `search [QUERY] [-n N]`: List messages matching a Zimbra search query, newest first. The default query is `in:inbox`, the default limit 20.
 - `todo [--days N] [--all]`: List inbox mails of the last *N* days (default 14) that still wait for a reply. See **NOTES** for what it skips.
@@ -131,7 +132,7 @@ An expired auth token ends with the message `auth token expired, run: zmclaude l
 # FILES
 
 - `~/.config/zmclaude/config.toml`: Server, account and options, see **CONFIGURATION**.
-- `~/.config/zmclaude/rules.toml`: Reply rules.
+- `~/.config/zmclaude/rules.toml`: Reply rules, first written by **init**.
 - `~/.config/zmclaude/identities.json`: Identities, written by **sync**.
 - `~/.config/zmclaude/signatures/`: Signatures as `.html` and `.txt`, written by **sync**.
 - `~/.config/zmclaude/filters.json`: Incoming mail filter rules, written by **sync**.
@@ -162,12 +163,9 @@ The copies written by **sync** are for looking things up.
 First setup:
 
 ```sh
-mkdir -p ~/.config/zmclaude
-printf 'url = "https://mail.example.com"\nuser = "jane@example.com"\n' \
-  > ~/.config/zmclaude/config.toml
+zmclaude init https://mail.example.com jane@example.com
 zmclaude login
 zmclaude sync
-cp rules.example.toml ~/.config/zmclaude/rules.toml
 ```
 
 Find the mails that wait for an answer and read one with its conversation:

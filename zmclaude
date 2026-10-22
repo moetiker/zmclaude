@@ -4,6 +4,7 @@
 Nothing is ever sent: replies are stored in the Drafts folder only.
 
 Usage:
+  zmclaude init URL USER              create config.toml and rules.toml
   zmclaude login                      authenticate, cache the auth token
   zmclaude search [QUERY] [-n N]      Zimbra search syntax, default "in:inbox"
   zmclaude show ID                    print headers and plain-text body
@@ -70,8 +71,8 @@ def load_settings():
     url = os.environ.get("ZIMBRA_URL", conf.get("url", ""))
     user = os.environ.get("ZIMBRA_USER", conf.get("user", ""))
     if not url or not user:
-        sys.exit(f"set url and user in {CONFIG_DIR / 'config.toml'} "
-                 "or ZIMBRA_URL and ZIMBRA_USER")
+        sys.exit(f"no server configured: run zmclaude init URL USER, or set url and user "
+                 f"in {CONFIG_DIR / 'config.toml'} or ZIMBRA_URL and ZIMBRA_USER")
     return url.rstrip("/"), user, os.environ.get("ZIMBRA_FROM_NAME", conf.get("from_name", ""))
 
 
@@ -861,6 +862,89 @@ def cmd_sync(_args):
         print(f"no reply rules yet: {RULES_FILE}")
 
 
+# the rules.toml that "init" writes: a Default rule and commented examples
+START_RULES = r'''# Reply rules for zmclaude, written by "zmclaude init".
+# The first rule whose match fits wins.
+#
+# match keys (all optional, all given keys must fit):
+#   to          = addresses the mail was sent to (To or Cc)
+#   from        = sender addresses
+#   from_domain = sender domains
+#   subject     = regular expression on the subject
+#
+# Sender address, signature and logo come from the Zimbra identities (see
+# identities.json, refreshed by "zmclaude sync"), not from this file.
+#
+# "zmclaude draft" and "forward" apply these keys; command-line options win:
+#   identity  = Zimbra identity to write as (--identity)
+#   reply_all = true to reply to all recipients (--all / --no-all)
+#   cc        = addresses added as Cc (--cc adds more)
+#
+# Other keys describe how to answer; "zmclaude rule" prints them:
+#   language ("de", "en", ... or "auto": as the incoming mail),
+#   address ("Sie", "du" or "auto": as the incoming mail),
+#   greeting, closing, facts (fixed information that may be used in
+#   replies), notes (hints for writing the reply)
+
+# Examples, remove the "# " to use one:
+#
+# [[rule]]
+# name = "Course registration"
+# match.to = ["courses@example.org"]
+# language = "en"
+# address = "auto"
+# greeting = "Dear {name}"
+# closing = "Kind regards\nJane Doe"
+# facts = [
+#   "Course dates and sign-up: https://courses.example.org",
+#   "Fee: EUR 250 per day, lunch included",
+# ]
+# notes = [
+#   "Registration happens only through the sign-up form.",
+# ]
+#
+# [[rule]]
+# name = "Invoices"
+# match.subject = '(?i)\b(invoice|rechnung)\b'
+# language = "de"
+# address = "Sie"
+# closing = "Freundliche Grüsse\nJane Doe"
+# notes = [
+#   "Questions about an amount go to accounting@example.org in Cc.",
+# ]
+#
+# [[rule]]
+# name = "Customer with fixed Cc"
+# match.from_domain = ["customer.example.com"]
+# reply_all = true
+
+[[rule]]
+name = "Default"
+language = "auto"
+address = "auto"
+'''
+
+
+def cmd_init(args):
+    """Create the configuration directory with config.toml and rules.toml.
+
+    Existing files are left as they are.
+    """
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    settings = {"url": args.url.rstrip("/"), "user": args.user}
+    if args.from_name:
+        settings["from_name"] = args.from_name
+    # a JSON string is a valid TOML basic string
+    config = "".join(f"{k} = {json.dumps(v, ensure_ascii=False)}\n" for k, v in settings.items())
+    for path, text in ((CONFIG_DIR / "config.toml", config), (RULES_FILE, START_RULES)):
+        if path.exists():
+            print(f"{path} exists, left as it is")
+        else:
+            write_private(path, text)
+            print(f"wrote {path}")
+    print("next: zmclaude login, then zmclaude sync")
+
+
 def match_rule(m):
     """Return the first reply rule in rules.toml that matches message m."""
     rules = read_toml(RULES_FILE).get("rule", [])
@@ -910,6 +994,11 @@ def cmd_rule(args):
 def main():
     parser = argparse.ArgumentParser(prog="zmclaude", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("init", help="create config.toml and rules.toml")
+    p.add_argument("url", help="Zimbra server, for example https://mail.example.com")
+    p.add_argument("user", help="account, for example jane@example.com")
+    p.add_argument("--from-name", help="sender name when the identity sets none")
+    p.set_defaults(func=cmd_init)
     sub.add_parser("login").set_defaults(func=cmd_login)
     p = sub.add_parser("search")
     p.add_argument("query", nargs="?", default="in:inbox")
@@ -983,7 +1072,8 @@ def main():
     p.set_defaults(func=cmd_draft)
     args = parser.parse_args()
     global URL, USER, FROM_NAME
-    URL, USER, FROM_NAME = load_settings()
+    if args.func is not cmd_init:
+        URL, USER, FROM_NAME = load_settings()
     try:
         args.func(args)
     except SoapError as err:
