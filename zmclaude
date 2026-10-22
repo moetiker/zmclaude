@@ -887,7 +887,9 @@ def cmd_sync(_args):
     for sig in sigs:
         for c in sig.get("content", []):
             ext = "html" if c["type"] == "text/html" else "txt"
-            write_private(sig_dir / f"{sig['name']}.{ext}", c["_content"] + "\n")
+            # a name is free text in Zimbra; keep it inside sig_dir
+            name = re.sub(r"[/\\]", "_", sig["name"]).lstrip(".") or "unnamed"
+            write_private(sig_dir / f"{name}.{ext}", c["_content"] + "\n")
 
     filters = call("GetFilterRulesRequest", {}).get("filterRules", [{}])[0].get("filterRule", [])
     write_private(CONFIG_DIR / "filters.json", json.dumps(filters, indent=2, ensure_ascii=False) + "\n")
