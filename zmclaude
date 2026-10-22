@@ -45,7 +45,7 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 TOKEN_FILE = Path.home() / ".cache" / "zmclaude" / "token"
@@ -448,7 +448,8 @@ def cmd_contacts(args):
 def cmd_free(args):
     start = datetime.strptime(args.start, "%Y-%m-%d") if args.start else \
         datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start.timestamp() + args.days * 86400
+    # Step in calendar days: a day is 23 or 25 hours long at a DST change.
+    end = (start + timedelta(days=args.days)).timestamp()
     resp = call("GetFreeBusyRequest", {"s": int(start.timestamp() * 1000), "e": int(end * 1000),
                                        "uid": USER})
     busy = []
@@ -471,7 +472,7 @@ def cmd_free(args):
             fmt = lambda t: datetime.fromtimestamp(t).strftime("%H:%M")
             slots = ", ".join(f"{fmt(s)}-{fmt(e)}" for s, e in free if e - s >= args.min * 60)
             print(f"{day:%a %Y-%m-%d}  free: {slots or '-'}")
-        day = datetime.fromtimestamp(day.timestamp() + 86400).replace(hour=0, minute=0)
+        day += timedelta(days=1)
 
 
 def get_prefs():
