@@ -43,7 +43,8 @@ The match keys are:
 - `cc`: Addresses added as Cc. `--cc` adds further addresses.
 
 The remaining keys describe how to answer:
-`language`, `address` (`Sie`, `du` or `auto`), `greeting`, `closing`,
+`language` (a language code such as `de`, or `auto` for the language of the incoming mail),
+`address` (`Sie`, `du` or `auto`), `greeting`, `closing`,
 `facts` (fixed information a reply may use) and `notes` (hints for writing the reply).
 **zmclaude** prints them with **rule** and does not apply them itself.
 The repository carries a commented example, `rules.example.toml`.

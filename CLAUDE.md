@@ -30,8 +30,9 @@ changes zmclaude itself. The full command reference is `docs/manual.md`.
    someone else at the same organisation; reuse wording and general answers
    from them, never facts about that other person or their case.
 4. Write the reply as an HTML fragment (`<div>` per paragraph, `<div><br></div>`
-   between them, closing as the rule says). Write it in the language of the
-   incoming mail. Do not add the signature or the quote; `draft` does that.
+   between them, closing as the rule says). Write it in the rule's
+   `language`; with `auto` or no rule, in the language of the incoming mail.
+   Do not add the signature or the quote; `draft` does that.
 5. `./zmclaude draft ID body.html` (`--all` to reply to everyone, `--cc`,
    `--attach`). `draft` applies the rule's `identity`, `reply_all` and `cc`
    itself and prints what it took from the rule; pass `--identity` or

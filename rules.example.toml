@@ -16,7 +16,8 @@
 #   cc        = addresses added as Cc (--cc adds more)
 #
 # Other keys describe how to answer; "zmclaude rule" prints them:
-#   language, address ("Sie", "du" or "auto": as the incoming mail),
+#   language ("de", "en", ... or "auto": as the incoming mail),
+#   address ("Sie", "du" or "auto": as the incoming mail),
 #   greeting, closing, facts (fixed information that may be used in
 #   replies), notes (hints for writing the reply)
 
