@@ -157,3 +157,101 @@ def test_config_is_not_written_by_a_failing_init(tmp_path):
     assert result.returncode == 1
     assert "must start with https://" in result.stderr
     assert not (tmp_path / "config").exists()
+
+
+STRAY_STYLE = ('<html><head><style type="text/css">\r\n  .a { color: red; }\r\n'
+               '    <![endif]-->\r\n  </style></head><body><p>Grüezi</p>'
+               '<!--[if mso]><table><![endif]--></body></html>')
+
+
+def test_fix_style_comments_removes_a_stray_endif(z):
+    fixed, n = z.fix_style_comments(STRAY_STYLE)
+    assert n == 1
+    assert "<![endif]-->\r\n  </style>" not in fixed
+    # conditional comments outside <style> are not touched
+    assert fixed.endswith("<!--[if mso]><table><![endif]--></body></html>")
+
+
+def test_fix_style_comments_removes_a_comment_end_without_start(z):
+    # the style of an order confirmation lost its opening <!--
+    text = "<style>\n  .a { color: red; }\n\n        -->\n    </style><!-- note -->"
+    assert z.fix_style_comments(text) == ("<style>\n  .a { color: red; }\n\n    </style><!-- note -->", 1)
+
+
+def test_fix_style_comments_keeps_a_wrapped_style(z):
+    wrapped = "<style><!--\n.a { color: red; }\n--></style>"
+    assert z.fix_style_comments(wrapped) == (wrapped, 0)
+
+
+def test_fix_style_comments_keeps_paired_conditionals(z):
+    paired = "<style><!--[if mso]>.a { color: red; }<![endif]--></style>"
+    assert z.fix_style_comments(paired) == (paired, 0)
+
+
+def mail(html_part, cte):
+    return ("From: shop@example.com\r\nTo: jane@example.com\r\n"
+            "Subject: =?UTF-8?Q?Das_iPhone_ist_erh=C3=A4ltlich?=\r\n"
+            "MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"b\"\r\n\r\n"
+            "--b\r\nContent-Type: text/plain; charset=\"utf-8\"\r\n"
+            "Content-Transfer-Encoding: 8bit\r\n\r\nGrüezi\r\n"
+            f"--b\r\nContent-Type: text/html; charset=\"utf-8\"\r\n"
+            f"Content-Transfer-Encoding: {cte}\r\n\r\n{html_part}\r\n--b--\r\n").encode()
+
+
+@pytest.mark.parametrize("cte", ["8bit", "quoted-printable", "base64"])
+def test_fix_message_repairs_the_html_part(z, cte):
+    import base64
+    import email
+    import quopri
+    body = STRAY_STYLE.encode()
+    encoded = {"8bit": body,
+               "quoted-printable": quopri.encodestring(body),
+               "base64": base64.encodebytes(body)}[cte].decode()
+    fixed, n = z.fix_message(mail(encoded, cte))
+    assert n == 1
+    msg = email.message_from_bytes(fixed)
+    plain, html_part = msg.get_payload()
+    assert plain.get_payload(decode=True).decode() == "Grüezi"
+    assert html_part["Content-Transfer-Encoding"] == cte
+    text = html_part.get_payload(decode=True).decode()
+    assert "<![endif]-->\r\n  </style>" not in text and "Grüezi" in text
+    assert b"Subject: =?UTF-8?Q?Das_iPhone_ist_erh=C3=A4ltlich?=\r\n" in fixed
+
+
+def test_fix_message_without_stray_endif_changes_nothing(z):
+    raw = mail("<html><body><p>ok</p></body></html>", "8bit")
+    assert z.fix_message(raw) == (raw, 0)
+
+
+def fixhtml(z, raw, trash=False):
+    calls = []
+    def call(request, body, ns=None):
+        calls.append((request, body))
+        if request == "GetMsgRequest" and body["m"]["id"] == "7":
+            return {"m": [{"id": "7", "l": "2", "f": "u", "d": 1792733962000, "tn": "shop"}]}
+        if request == "AddMsgRequest":
+            return {"m": [{"id": "8"}]}
+        return {"m": [{"mp": [{"ct": "text/html", "body": True, "content": "<p>ok</p>"}]}]}
+    z.call = call
+    z.fetch_rest = lambda path: raw
+    z.upload_data = lambda data, name, ctype: "aid-1"
+    z.cmd_fixhtml(types.SimpleNamespace(id="7", trash=trash))
+    return calls
+
+
+def test_fixhtml_imports_the_copy_like_the_original(z, capsys):
+    calls = fixhtml(z, mail(STRAY_STYLE, "8bit"))
+    add = next(body for request, body in calls if request == "AddMsgRequest")
+    assert add == {"m": {"l": "2", "f": "u", "d": 1792733962000, "tn": "shop", "aid": "aid-1"}}
+    assert not any(request == "MsgActionRequest" for request, _ in calls)
+    assert "8" in capsys.readouterr().out
+
+
+def test_fixhtml_trash_moves_the_original(z):
+    calls = fixhtml(z, mail(STRAY_STYLE, "8bit"), trash=True)
+    assert ("MsgActionRequest", {"action": {"op": "trash", "id": "7"}}) in calls
+
+
+def test_fixhtml_with_nothing_to_fix_imports_nothing(z):
+    with pytest.raises(SystemExit, match="nothing to fix"):
+        fixhtml(z, mail("<html><body>ok</body></html>", "8bit"))

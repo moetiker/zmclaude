@@ -15,6 +15,7 @@ Usage:
   zmclaude thread ID [--full]         the whole conversation, quotes cut
   zmclaude attachments ID             list attachments
   zmclaude save ID PART [DIR]         save an attachment
+  zmclaude fixhtml ID [--trash]       import a copy Zimbra can display
   zmclaude contacts QUERY             look up addresses in contacts and GAL
   zmclaude free [--start D] [--days N]  free times from the calendar
   zmclaude forward ID BODYFILE --to ADDR [...]   save a forward draft
@@ -33,12 +34,17 @@ Configuration, in ZMCLAUDE_CONFIG/config.toml or the environment (wins):
 """
 
 import argparse
+import base64
+import email
+import email.generator
 import getpass
 import hashlib
 import html
+import io
 import json
 import mimetypes
 import os
+import quopri
 import re
 import sys
 import tomllib
@@ -477,6 +483,76 @@ def cmd_save(args):
     print(target)
 
 
+def fix_style_comments(text):
+    """Remove comment ends (--> or <![endif]-->) from <style> blocks without <!--.
+
+    Zimbra's HTML filter returns an empty body for such a mail, and the web
+    client shows a blank page. Seen in newsletters built with Salesforce
+    Marketing Cloud (<![endif]--> without <!--[if ...]>) and in an order
+    confirmation whose <style><!-- ... --></style> had lost its <!--.
+    """
+    count = 0
+
+    def fix(match):
+        nonlocal count
+        block = match.group(0)
+        if "<!--" in block:
+            return block
+        block, n = re.subn(r"[ \t]*(?:<!\[endif\])?-->[ \t]*\r?\n?", "", block)
+        count += n
+        return block
+
+    return re.sub(r"<style\b.*?</style>", fix, text, flags=re.DOTALL | re.IGNORECASE), count
+
+
+def fix_message(raw):
+    """Apply fix_style_comments to every text/html part; return (bytes, count)."""
+    msg = email.message_from_bytes(raw)
+    count = 0
+    for part in msg.walk():
+        if part.get_content_type() != "text/html":
+            continue
+        charset = part.get_content_charset() or "utf-8"
+        text, n = fix_style_comments(part.get_payload(decode=True).decode(charset, "replace"))
+        if not n:
+            continue
+        count += n
+        data = text.encode(charset, "replace")
+        cte = part.get("Content-Transfer-Encoding", "").strip().lower()
+        if cte == "base64":
+            part.set_payload(base64.encodebytes(data).decode())
+        elif cte == "quoted-printable":
+            part.set_payload(quopri.encodestring(data).decode())
+        else:
+            part.set_payload(data.decode("ascii", "surrogateescape"))
+    if not count:
+        return raw, 0
+    out = io.BytesIO()
+    # maxheaderlen=0 keeps the original header lines as they are
+    email.generator.BytesGenerator(out, mangle_from_=False, maxheaderlen=0).flatten(
+        msg, linesep="\r\n")
+    return out.getvalue(), count
+
+
+def cmd_fixhtml(args):
+    raw = fetch_rest(f"?id={urllib.parse.quote(args.id)}")
+    fixed, count = fix_message(raw)
+    if not count:
+        sys.exit(f"message {args.id}: nothing to fix")
+    orig = call("GetMsgRequest", {"m": {"id": args.id}})["m"][0]
+    new = {"l": orig["l"], "f": orig.get("f", ""), "d": orig["d"]}
+    if orig.get("tn"):
+        new["tn"] = orig["tn"]
+    new["aid"] = upload_data(fixed, f"{args.id}.eml", "message/rfc822")
+    new_id = call("AddMsgRequest", {"m": new})["m"][0]["id"]
+    print(f"fixed copy {new_id} added next to {args.id} ({count} stray comment end removed)")
+    if not body_parts(get_msg(new_id, rich=True))[1]:
+        print(f"warning: Zimbra still shows the HTML of {new_id} as empty", file=sys.stderr)
+    if args.trash:
+        call("MsgActionRequest", {"action": {"op": "trash", "id": args.id}})
+        print(f"original {args.id} moved to the trash")
+
+
 def cmd_contacts(args):
     resp = call("AutoCompleteRequest", {"name": args.query, "limit": 20})
     for match in resp.get("match", []):
@@ -625,16 +701,19 @@ def inline_parts(part):
 
 def upload(path):
     """Upload a file for use as attachment, return its upload id."""
-    data = Path(path).read_bytes()
-    ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
-    name = urllib.parse.quote(Path(path).name)
+    return upload_data(Path(path).read_bytes(), Path(path).name,
+                       mimetypes.guess_type(path)[0] or "application/octet-stream")
+
+
+def upload_data(data, name, ctype):
+    """Upload bytes, return the upload id."""
     req = urllib.request.Request(
         URL + "/service/upload?fmt=raw",
         data=data,
         headers={
             "Cookie": "ZM_AUTH_TOKEN=" + load_token(),
             "Content-Type": ctype,
-            "Content-Disposition": f"attachment; filename*=UTF-8''{name}",
+            "Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(name)}",
         },
     )
     try:
@@ -643,10 +722,10 @@ def upload(path):
     except urllib.error.HTTPError as err:
         if err.code in (401, 403):
             sys.exit("auth token expired, run: zmclaude login")
-        sys.exit(f"upload of {path} failed: HTTP {err.code}")
+        sys.exit(f"upload of {name} failed: HTTP {err.code}")
     found = re.match(r"\s*(\d+),'[^']*','([^']+)'", answer)
     if not found or found.group(1) != "200":
-        sys.exit(f"upload of {path} failed: {answer.strip()}")
+        sys.exit(f"upload of {name} failed: {answer.strip()}")
     return found.group(2)
 
 
@@ -1075,6 +1154,10 @@ def main():
     p.add_argument("part")
     p.add_argument("dir", nargs="?", default="attachments")
     p.set_defaults(func=cmd_save)
+    p = sub.add_parser("fixhtml", help="import a copy whose HTML Zimbra can display")
+    p.add_argument("id")
+    p.add_argument("--trash", action="store_true", help="move the original to the trash")
+    p.set_defaults(func=cmd_fixhtml)
     p = sub.add_parser("contacts", help="look up addresses in contacts and GAL")
     p.add_argument("query")
     p.set_defaults(func=cmd_contacts)
