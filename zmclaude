@@ -484,20 +484,21 @@ def cmd_save(args):
 
 
 def fix_style_comments(text):
-    """Remove <![endif]--> without a <!--[if ...]> from <style> blocks.
+    """Remove comment ends (--> or <![endif]-->) from <style> blocks without <!--.
 
-    Zimbra's HTML filter returns an empty body for such a mail: newsletters
-    built with Salesforce Marketing Cloud end their head style this way and
-    showed as blank pages in the web client.
+    Zimbra's HTML filter returns an empty body for such a mail, and the web
+    client shows a blank page. Seen in newsletters built with Salesforce
+    Marketing Cloud (<![endif]--> without <!--[if ...]>) and in an order
+    confirmation whose <style><!-- ... --></style> had lost its <!--.
     """
     count = 0
 
     def fix(match):
         nonlocal count
         block = match.group(0)
-        if re.search(r"<!--\[if", block, re.IGNORECASE):
+        if "<!--" in block:
             return block
-        block, n = re.subn(r"[ \t]*<!\[endif\]-->[ \t]*\r?\n?", "", block, flags=re.IGNORECASE)
+        block, n = re.subn(r"[ \t]*(?:<!\[endif\])?-->[ \t]*\r?\n?", "", block)
         count += n
         return block
 
@@ -544,7 +545,7 @@ def cmd_fixhtml(args):
         new["tn"] = orig["tn"]
     new["aid"] = upload_data(fixed, f"{args.id}.eml", "message/rfc822")
     new_id = call("AddMsgRequest", {"m": new})["m"][0]["id"]
-    print(f"fixed copy {new_id} added next to {args.id} ({count} stray <![endif]--> removed)")
+    print(f"fixed copy {new_id} added next to {args.id} ({count} stray comment end removed)")
     if not body_parts(get_msg(new_id, rich=True))[1]:
         print(f"warning: Zimbra still shows the HTML of {new_id} as empty", file=sys.stderr)
     if args.trash:

@@ -172,6 +172,17 @@ def test_fix_style_comments_removes_a_stray_endif(z):
     assert fixed.endswith("<!--[if mso]><table><![endif]--></body></html>")
 
 
+def test_fix_style_comments_removes_a_comment_end_without_start(z):
+    # the style of an order confirmation lost its opening <!--
+    text = "<style>\n  .a { color: red; }\n\n        -->\n    </style><!-- note -->"
+    assert z.fix_style_comments(text) == ("<style>\n  .a { color: red; }\n\n    </style><!-- note -->", 1)
+
+
+def test_fix_style_comments_keeps_a_wrapped_style(z):
+    wrapped = "<style><!--\n.a { color: red; }\n--></style>"
+    assert z.fix_style_comments(wrapped) == (wrapped, 0)
+
+
 def test_fix_style_comments_keeps_paired_conditionals(z):
     paired = "<style><!--[if mso]>.a { color: red; }<![endif]--></style>"
     assert z.fix_style_comments(paired) == (paired, 0)

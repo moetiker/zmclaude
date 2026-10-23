@@ -82,7 +82,7 @@ and stores it with **draft**.
 - `raw ID [--headers]`: Print the stored MIME message, or only its top-level headers.
 - `attachments ID`: List the attachments of a message with part number, type, size and file name.
 - `save ID PART [DIR]`: Save attachment *PART* of message *ID* into *DIR*, by default `attachments` in the current directory, and print the path. An existing file is never overwritten: the name gets a number, as in `report-1.pdf`. A name that starts with a dot gets a leading `_`.
-- `fixhtml ID [--trash]`: Remove `<![endif]-->` without a preceding `<!--[if ...]>` from the `<style>` blocks of message *ID*, which the web client otherwise shows as an empty page, and import the repaired copy into the same folder with the date, flags and tags of the original. `--trash` moves the original to the trash. A message with nothing to repair is left as it is and the command exits 1.
+- `fixhtml ID [--trash]`: Remove comment ends (`-->` or `<![endif]-->`) from the `<style>` blocks of message *ID* that contain no `<!--`, which the web client otherwise shows as an empty page, and import the repaired copy into the same folder with the date, flags and tags of the original. `--trash` moves the original to the trash. A message with nothing to repair is left as it is and the command exits 1.
 - `contacts QUERY`: Look up addresses in the contacts and the global address list.
 - `free [--start YYYY-MM-DD] [--days N]`: Print the free times from the calendar per working day, see **OPTIONS**.
 - `rule ID`: Print the identity and the reply rule that apply to a message.
