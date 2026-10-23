@@ -52,6 +52,7 @@ The full reference is the manual, [`docs/manual.md`](docs/manual.md).
 ./zmclaude thread ID [--full]         # the whole conversation, quoted text cut
 ./zmclaude attachments ID             # list attachments
 ./zmclaude save ID PART [DIR]         # save an attachment
+./zmclaude fixhtml ID [--trash]       # repaired copy of a mail the web client shows as empty
 ./zmclaude contacts QUERY             # addresses from contacts and the global address list
 ./zmclaude free [--start YYYY-MM-DD] [--days N]   # free times from the calendar
 ./zmclaude draft ID reply.html [options]

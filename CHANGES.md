@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### New
+- `zmclaude fixhtml ID` repairs a mail that the Zimbra web client shows as an empty page and imports the repaired copy next to the original. `--trash` moves the original to the trash.
 
 ### Changed
 
