@@ -74,7 +74,7 @@ and stores it with **draft**.
 # COMMANDS
 
 - `init URL USER [--from-name NAME]`: Create the configuration directory with mode 700, `config.toml` with *URL* and *USER*, and `rules.toml` with a Default rule and commented examples. Existing files are left as they are.
-- `login`: Ask for the password and, if two-factor authentication is on, the code; store the auth token.
+- `login [--gui]`: Ask for the password and, if two-factor authentication is on, the code; store the auth token. `--gui` asks in dialog windows instead of the terminal, with **zenity**, **kdialog**, **osascript** on macOS, or Python's **tkinter**, whichever is found first. Without `--gui` and without a terminal, **login** reads the password from standard input and stops if it gets none.
 - `search [QUERY] [-n N]`: List messages matching a Zimbra search query, newest first. The default query is `in:inbox`, the default limit 20.
 - `todo [--days N] [--all]`: List inbox mails of the last *N* days (default 14) that still wait for a reply. See **NOTES** for what it skips.
 - `show ID`: Print the headers and the plain-text body of a message.

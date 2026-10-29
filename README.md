@@ -43,6 +43,7 @@ The full reference is the manual, [`docs/manual.md`](docs/manual.md).
 
 ```sh
 ./zmclaude login                      # password and 2FA code, caches the auth token
+./zmclaude login --gui                # the same in dialog windows, for use without a terminal
 ./zmclaude search 'in:inbox' -n 20    # Zimbra search syntax
 ./zmclaude show ID                    # headers and plain-text body
 ./zmclaude raw ID [--headers]         # stored MIME message
