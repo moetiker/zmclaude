@@ -310,3 +310,104 @@ def test_dialog_command_picks_the_available_program(z, monkeypatch, found, platf
     monkeypatch.setattr(z.shutil, "which", lambda name: name if name in found else None)
     monkeypatch.setattr(z.sys, "platform", platform)
     assert z.dialog_command("2FA code: ", False)[0] == program
+
+
+ORIGINAL = {"id": "7", "mid": "<m7@example.org>", "su": "AW: Offer", "d": 1792733962000,
+            "e": [{"t": "f", "a": "bob@example.org", "p": "Bob"},
+                  {"t": "t", "a": "jane@example.com"},
+                  {"t": "t", "a": "anna@example.com"}],
+            "mp": [{"part": "1", "ct": "text/plain", "body": True, "content": "Hi"}]}
+IDENTITIES = [{"id": "i1", "name": "DEFAULT", "_attrs": {"zimbraPrefFromAddress": "jane@example.com"}},
+              {"id": "i2", "name": "Anna", "_attrs": {"zimbraPrefFromAddress": "anna@example.com"}}]
+PASTED = {"id": "9", "mp": [{"part": "1", "ct": "multipart/related", "mp": [
+    {"part": "1.1", "ct": "text/html", "body": True, "content": "<img src='cid:x1'>"},
+    {"part": "1.2", "ct": "image/png", "ci": "<x1>", "cd": "inline", "filename": "image.png"}]}]}
+
+
+def draft(z, tmp_path, monkeypatch, *argv, old=None, text="<div>Thanks</div><div><br></div>"):
+    """Run zmclaude draft 7 with argv; return the saved message and the output."""
+    saved = []
+    def call(request, body, ns=None):
+        if request == "GetIdentitiesRequest":
+            return {"identity": IDENTITIES}
+        if request == "GetSignaturesRequest":
+            return {"signature": [{"id": "s1", "name": "work",
+                                   "content": [{"type": "text/html", "_content": "<div>Jane</div>"}]}]}
+        if request == "SaveDraftRequest":
+            saved.append(body["m"])
+            return {"m": [{"id": "10"}]}
+        return {}
+    z.call = call
+    z.get_msg = lambda msg_id, rich=False: ORIGINAL if msg_id == "7" else old
+    z.fetch_rest = lambda path: b"From: jane@example.com\r\n\r\nold draft\r\n"
+    z.RULES_FILE = tmp_path / "rules.toml"
+    body = tmp_path / "body.html"
+    body.write_text(text)
+    monkeypatch.setattr(sys, "argv", ["zmclaude", "draft", "7", str(body), "--signature", "work", *argv])
+    monkeypatch.setattr(z, "load_settings", lambda: (z.URL, z.USER, z.FROM_NAME))
+    z.main()
+    return saved
+
+
+def test_reply_all_keeps_a_colleague_one_can_send_as(z, tmp_path, monkeypatch):
+    saved = draft(z, tmp_path, monkeypatch, "--all")
+    assert [(e["t"], e["a"]) for e in saved[0]["e"]][1:] == [("t", "bob@example.org"), ("c", "anna@example.com")]
+
+
+@pytest.mark.parametrize("subject, expected", [
+    ("AW: Offer", "Re: AW: Offer"),
+    ("Re: Re: Offer", "Re: Offer"),
+    ("Fwd: Offer", "Re: Offer"),
+])
+def test_reply_subject_follows_the_web_client(z, tmp_path, monkeypatch, subject, expected):
+    monkeypatch.setitem(ORIGINAL, "su", subject)
+    saved = draft(z, tmp_path, monkeypatch)
+    assert saved[0]["su"]["_content"] == expected
+
+
+def test_reply_subject_option_is_taken_as_is(z, tmp_path, monkeypatch):
+    saved = draft(z, tmp_path, monkeypatch, "--subject", "New topic")
+    assert saved[0]["su"]["_content"] == "New topic"
+
+
+@pytest.mark.parametrize("blank", ["", "<div><br></div>", "<div><br></div>\n<div><br></div>\n"])
+def test_one_blank_line_before_the_signature(z, tmp_path, monkeypatch, blank):
+    saved = draft(z, tmp_path, monkeypatch, text="<div>Thanks</div>" + blank)
+    rich = saved[0]["mp"][0]["mp"][1]["content"]["_content"]
+    assert "<div>Thanks</div><div><br></div></div><div id=\"s1\"" in rich
+
+
+def test_update_keeps_a_copy_of_the_old_draft(z, tmp_path, monkeypatch, capsys):
+    saved = draft(z, tmp_path, monkeypatch, "--update", "9", old={"id": "9", "mp": []})
+    assert saved[0]["id"] == "9"
+    copies = list((tmp_path / "backup").glob("*-9.eml"))
+    assert len(copies) == 1 and copies[0].read_bytes().endswith(b"old draft\r\n")
+    assert str(copies[0]) in capsys.readouterr().out
+
+
+def test_update_refuses_to_drop_pasted_images(z, tmp_path, monkeypatch):
+    with pytest.raises(SystemExit, match="image.png"):
+        draft(z, tmp_path, monkeypatch, "--update", "9", old=PASTED)
+    assert not (tmp_path / "backup").exists()
+
+
+def test_update_drops_images_when_asked(z, tmp_path, monkeypatch):
+    saved = draft(z, tmp_path, monkeypatch, "--update", "9", "--drop-images", old=PASTED)
+    assert saved[0]["id"] == "9"
+
+
+def test_backup_removes_copies_older_than_a_week(z):
+    z.BACKUP_DIR.mkdir()
+    old, recent = z.BACKUP_DIR / "old.eml", z.BACKUP_DIR / "recent.eml"
+    for path, days in ((old, 8), (recent, 6)):
+        path.write_bytes(b"x")
+        stamp = time.time() - days * 86400
+        os.utime(path, (stamp, stamp))
+    z.backup("5", b"new")
+    assert not old.exists() and recent.exists()
+    assert len(list(z.BACKUP_DIR.glob("*-5.eml"))) == 1
+
+
+def test_fixhtml_keeps_a_copy_of_the_original(z):
+    fixhtml(z, mail(STRAY_STYLE, "8bit"))
+    assert len(list(z.BACKUP_DIR.glob("*-7.eml"))) == 1
