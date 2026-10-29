@@ -255,3 +255,58 @@ def test_fixhtml_trash_moves_the_original(z):
 def test_fixhtml_with_nothing_to_fix_imports_nothing(z):
     with pytest.raises(SystemExit, match="nothing to fix"):
         fixhtml(z, mail("<html><body>ok</body></html>", "8bit"))
+
+
+def login(z, tmp_path, monkeypatch, answers, gui=True):
+    """Run login with dialog answers in order; return the AuthRequest bodies."""
+    asked, auth = [], []
+    def run(cmd, **_):
+        asked.append(cmd)
+        out = answers.pop(0)
+        return types.SimpleNamespace(returncode=0 if out else 1, stdout=out + "\n")
+    def soap(request, body, token=None, ns=None):
+        auth.append(body)
+        if "password" in body:
+            return {"twoFactorAuthRequired": {"_content": "true"}, "authToken": [{"_content": "half"}]}
+        return {"authToken": [{"_content": "full"}], "lifetime": 3600000}
+    monkeypatch.delenv("ZIMBRA_PASSWORD", raising=False)
+    monkeypatch.setattr(z.shutil, "which", lambda name: "/usr/bin/zenity" if name == "zenity" else None)
+    monkeypatch.setattr(z.subprocess, "run", run)
+    z.soap = soap
+    z.TOKEN_FILE = tmp_path / "token"
+    z.cmd_login(types.SimpleNamespace(gui=gui))
+    return asked, auth
+
+
+def test_login_gui_asks_password_and_code_in_dialogs(z, tmp_path, monkeypatch):
+    asked, auth = login(z, tmp_path, monkeypatch, ["secret", "123456"])
+    assert asked[0][-1] == "--password"
+    assert asked[1][-2:] == ["--text", "2FA code"]
+    assert auth[0]["password"] == {"_content": "secret"}
+    assert auth[1]["twoFactorCode"] == {"_content": "123456"}
+    assert (tmp_path / "token").read_text() == "full"
+
+
+def test_login_gui_cancelled_sends_nothing(z, tmp_path, monkeypatch):
+    with pytest.raises(SystemExit, match="cancelled"):
+        login(z, tmp_path, monkeypatch, [""])
+    assert not (tmp_path / "token").exists()
+
+
+def test_login_without_terminal_does_not_send_an_empty_password(z, monkeypatch):
+    monkeypatch.delenv("ZIMBRA_PASSWORD", raising=False)
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: False, readline=lambda: ""))
+    z.soap = lambda *a, **k: pytest.fail("AuthRequest sent")
+    with pytest.raises(SystemExit, match="--gui"):
+        z.cmd_login(types.SimpleNamespace(gui=False))
+
+
+@pytest.mark.parametrize("found, platform, program", [
+    ({"zenity", "kdialog"}, "linux", "zenity"),
+    ({"kdialog"}, "linux", "kdialog"),
+    (set(), "darwin", "osascript"),
+])
+def test_dialog_command_picks_the_available_program(z, monkeypatch, found, platform, program):
+    monkeypatch.setattr(z.shutil, "which", lambda name: name if name in found else None)
+    monkeypatch.setattr(z.sys, "platform", platform)
+    assert z.dialog_command("2FA code: ", False)[0] == program

@@ -5,7 +5,7 @@ Nothing is ever sent: replies are stored in the Drafts folder only.
 
 Usage:
   zmclaude init URL USER              create config.toml and rules.toml
-  zmclaude login                      authenticate, cache the auth token
+  zmclaude login [--gui]              authenticate, cache the auth token
   zmclaude search [QUERY] [-n N]      Zimbra search syntax, default "in:inbox"
   zmclaude show ID                    print headers and plain-text body
   zmclaude raw ID [--headers]         print the stored MIME message
@@ -46,6 +46,8 @@ import mimetypes
 import os
 import quopri
 import re
+import shutil
+import subprocess
 import sys
 import tomllib
 import urllib.error
@@ -156,11 +158,52 @@ def call(request, body, ns="urn:zimbraMail"):
 def prompt(label, secret=False):
     if sys.stdin.isatty():
         return getpass.getpass(label) if secret else input(label)
-    return sys.stdin.readline().strip()
+    answer = sys.stdin.readline().strip()
+    if not answer:
+        sys.exit("no terminal to ask on, use: zmclaude login --gui")
+    return answer
 
 
-def cmd_login(_args):
-    password = os.environ.get("ZIMBRA_PASSWORD") or prompt(f"Zimbra password for {USER}: ", True)
+def dialog_command(label, secret):
+    """Return the command that asks for one value in a dialog window, or None."""
+    label = label.rstrip(": ")
+    if shutil.which("zenity"):
+        kind = ["--password"] if secret else ["--entry", "--text", label]
+        return ["zenity", "--title", f"zmclaude: {label}", *kind]
+    if shutil.which("kdialog"):
+        return ["kdialog", "--title", "zmclaude", "--password" if secret else "--inputbox", label]
+    if sys.platform == "darwin":
+        hidden = " with hidden answer" if secret else ""
+        script = ("on run argv\n"
+                  f'text returned of (display dialog (item 1 of argv) default answer ""{hidden} with title "zmclaude")\n'
+                  "end run")
+        return ["osascript", "-e", script, label]
+    return None
+
+
+def ask_dialog(label, secret=False):
+    """Ask for one value in a dialog window; the value never passes a terminal."""
+    cmd = dialog_command(label, secret)
+    if cmd:
+        done = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        answer = done.stdout.rstrip("\n") if done.returncode == 0 else ""
+    else:
+        try:
+            from tkinter import Tk, simpledialog
+        except ImportError:
+            sys.exit("no dialog program found: install zenity or kdialog")
+        root = Tk()
+        root.withdraw()
+        answer = simpledialog.askstring("zmclaude", label, show="*" if secret else None) or ""
+        root.destroy()
+    if not answer:
+        sys.exit("login cancelled")
+    return answer
+
+
+def cmd_login(args):
+    ask = ask_dialog if args.gui else prompt
+    password = os.environ.get("ZIMBRA_PASSWORD") or ask(f"Zimbra password for {USER}: ", True)
     account = {"by": "name", "_content": USER}
     resp = soap(
         "AuthRequest",
@@ -169,7 +212,7 @@ def cmd_login(_args):
     )
     if str(resp.get("twoFactorAuthRequired", {}).get("_content")).lower() == "true":
         # the first token is only valid to complete the second factor
-        code = prompt("2FA code: ")
+        code = ask("2FA code: ")
         resp = soap(
             "AuthRequest",
             {
@@ -1122,7 +1165,9 @@ def main():
     p.add_argument("user", help="account, for example jane@example.com")
     p.add_argument("--from-name", help="sender name when the identity sets none")
     p.set_defaults(func=cmd_init)
-    sub.add_parser("login").set_defaults(func=cmd_login)
+    p = sub.add_parser("login")
+    p.add_argument("--gui", action="store_true")
+    p.set_defaults(func=cmd_login)
     p = sub.add_parser("search")
     p.add_argument("query", nargs="?", default="in:inbox")
     p.add_argument("-n", type=int, default=20)
