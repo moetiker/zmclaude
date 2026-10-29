@@ -57,6 +57,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 TOKEN_FILE = Path.home() / ".cache" / "zmclaude" / "token"
+# copies of drafts and mails taken before zmclaude replaces them
+BACKUP_DIR = Path.home() / ".cache" / "zmclaude" / "backup"
+BACKUP_DAYS = 7
 CONFIG_DIR = Path(os.environ.get("ZMCLAUDE_CONFIG", Path.home() / ".config" / "zmclaude"))
 RULES_FILE = CONFIG_DIR / "rules.toml"
 # set by load_settings() in main()
@@ -332,6 +335,23 @@ def fetch_rest(path):
         sys.exit(f"cannot fetch {path}: HTTP {err.code}")
 
 
+def backup(msg_id, raw=None):
+    """Save the raw message to BACKUP_DIR and return the file.
+
+    Backups older than BACKUP_DAYS are removed first.
+    """
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    cutoff = (datetime.now() - timedelta(days=BACKUP_DAYS)).timestamp()
+    for old in BACKUP_DIR.glob("*.eml"):
+        if old.stat().st_mtime < cutoff:
+            old.unlink()
+    path = BACKUP_DIR / f"{datetime.now():%Y-%m-%d-%H%M%S}-{msg_id}.eml"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(raw if raw is not None else fetch_rest(f"?id={urllib.parse.quote(msg_id)}"))
+    return path
+
+
 INBOX, TRASH, SENT, DRAFTS = "2", "3", "5", "6"
 TODO_LIMIT = 200
 BULK_HEADERS = ("List-Unsubscribe", "List-Id", "Precedence", "Auto-Submitted", "RT-Ticket")
@@ -582,6 +602,7 @@ def cmd_fixhtml(args):
     fixed, count = fix_message(raw)
     if not count:
         sys.exit(f"message {args.id}: nothing to fix")
+    backup(args.id, raw)
     orig = call("GetMsgRequest", {"m": {"id": args.id}})["m"][0]
     new = {"l": orig["l"], "f": orig.get("f", ""), "d": orig["d"]}
     if orig.get("tn"):
@@ -784,6 +805,19 @@ def attachment_parts(part):
     return found
 
 
+def lost_parts(old, keep_cids, keep_names):
+    """Return the names of the parts of draft old that its replacement drops.
+
+    Inline images survive when the replacement has a part with the same
+    content id, attachments when it has one with the same file name.
+    """
+    images = inline_parts(old)
+    names = {part: name for part, name, *_ in attachment_parts(old)}
+    lost = [names.get(part) or f"part {part}" for cid, part in images.items() if cid not in keep_cids]
+    return lost + [name or f"part {part}" for part, name in names.items()
+                   if part not in images.values() and name not in keep_names]
+
+
 def apply_rule(args, m, mode):
     """Take identity, reply_all and cc of the matching reply rule as defaults.
 
@@ -816,9 +850,11 @@ def compose(args, mode):
     body_html = body if args.bodyfile.endswith(".html") else text_to_html(body)
     emails = m.get("e", [])
     from_rule = apply_rule(args, m, mode)
-    ident, idents = pick_identity(m, args.identity)
+    ident, _ = pick_identity(m, args.identity)
     attrs = ident.get("_attrs", {})
-    own = {USER.lower()} | {i.get("_attrs", {}).get("zimbraPrefFromAddress", "").lower() for i in idents}
+    # only the sending address leaves the reply; other identities may send as
+    # someone else, who stays a recipient, as in the web client
+    own = {USER.lower(), attrs.get("zimbraPrefFromAddress", USER).lower()}
     # an empty "p" would become To: "" <addr>, so leave it out when there is no name
     def recipient(t, e):
         return {"t": t, "a": e["a"], **({"p": e["p"]} if e.get("p") else {})}
@@ -840,11 +876,12 @@ def compose(args, mode):
             recipients.append({"t": "c", "a": a})
     if not recipients and mode != "new":
         sys.exit("no recipients")
-    subject = getattr(args, "subject", None) or m.get("su", "")
-    if mode == "reply" and not re.match(r"(?i)(re|aw|antw):", subject):
-        subject = "Re: " + subject
-    if mode == "forward" and not re.match(r"(?i)(fwd|fw|wg):", subject):
-        subject = "Fwd: " + subject
+    subject = getattr(args, "subject", None)
+    if not subject:
+        # the web client strips Re:, Fw: and Fwd: and adds its own prefix,
+        # so "AW: x" becomes "Re: AW: x"
+        subject = re.sub(r"(?i)^(\s*(re|fwd?):\s*)+", "", m.get("su", ""))
+        subject = {"reply": "Re: ", "forward": "Fwd: "}.get(mode, "") + subject
 
     prefs = get_prefs()
     sig_id, sig_plain, sig_html = signature(
@@ -857,8 +894,10 @@ def compose(args, mode):
             f"color: {prefs.get('zimbraPrefHtmlEditorDefaultFontColor', '#000000')}")
     sig_html, sig_images = embed_doc_images(sig_html)
     sig_attr = f' id="{sig_id}"' if sig_id else ""
-    # same structure as a web client reply, minus its blank lines around the
+    # same structure as a web client reply, with one blank line before the
     # signature
+    if sig_html:
+        body_html = re.sub(r"(?i)(\s*<div><br\s*/?></div>)+\s*$", "", body_html) + "<div><br></div>"
     rich = (f'<html><body><div style="{font}"><div>{body_html}</div>'
             + (f'<div{sig_attr} data-marker="__SIG_PRE__">{sig_html}</div>' if sig_html else ""))
     plain = html_to_text(body_html) + (f"\n\n{sig_plain}" if sig_plain else "")
@@ -933,7 +972,17 @@ def compose(args, mode):
     if m:
         draft["origid"] = m["id"]
         draft["rt"] = "r" if mode == "reply" else "w"
+    saved = None
     if args.update:
+        # SaveDraftRequest replaces the whole draft and Zimbra keeps no old
+        # version, so keep a copy and refuse to drop images the user pasted
+        lost = lost_parts(get_msg(args.update, rich=True), {r["ci"] for r in related},
+                          {Path(f).name for f in args.attach}
+                          | {name for _, name, *_ in (attachment_parts(m) if mode == "forward" else [])})
+        if lost and not args.drop_images:
+            sys.exit(f"draft {args.update} has parts the new version would drop: "
+                     + ", ".join(lost) + "\nwrite a new draft instead, or pass --drop-images")
+        saved = backup(args.update)
         draft["id"] = args.update
     attach = {}
     if args.attach:
@@ -952,6 +1001,8 @@ def compose(args, mode):
     sender = f"{attrs.get('zimbraPrefFromDisplay', FROM_NAME)} <{attrs.get('zimbraPrefFromAddress', USER)}>"
     print(f"draft {resp['m'][0]['id']} saved to Drafts: {subject}")
     print(f"  from {sender} (identity {ident['name']}) -> {to}")
+    if saved:
+        print(f"  previous version saved to {saved}")
     if from_rule:
         print(f"  {from_rule}")
     for f in args.attach:
@@ -1227,6 +1278,7 @@ def main():
         p.add_argument("--identity")
         p.add_argument("--signature")
         p.add_argument("--update", metavar="DRAFTID")
+        p.add_argument("--drop-images", action="store_true")
         p.set_defaults(func=func, id=None)
     p = sub.add_parser("draft")
     p.add_argument("id")
@@ -1238,7 +1290,10 @@ def main():
     p.add_argument("--identity", help="Zimbra identity to reply as; default: identity of "
                    "the reply rule, else the one whose 'when sent to' addresses match the "
                    "original, else DEFAULT")
+    p.add_argument("--subject", help='subject; default: "Re: " and the subject of the original')
     p.add_argument("--update", metavar="DRAFTID", help="replace this existing draft")
+    p.add_argument("--drop-images", action="store_true",
+                   help="with --update: replace the draft even if images or attachments get lost")
     p.add_argument("--cc", action="append", default=[], metavar="ADDR", help="add a Cc recipient")
     p.add_argument("--attach", action="append", default=[], metavar="FILE", help="attach a file")
     p.set_defaults(func=cmd_draft)

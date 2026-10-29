@@ -9,13 +9,14 @@ SCRIPT = Path(__file__).resolve().parent.parent / "zmclaude"
 
 
 @pytest.fixture
-def z():
+def z(tmp_path):
     """The zmclaude script, loaded as a fresh module for each test."""
     loader = importlib.machinery.SourceFileLoader("zmclaude", str(SCRIPT))
     spec = importlib.util.spec_from_loader("zmclaude", loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     module.URL, module.USER, module.FROM_NAME = "https://mail.example.com", "jane@example.com", ""
+    module.BACKUP_DIR = tmp_path / "backup"
     return module
 
 

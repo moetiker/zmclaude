@@ -71,8 +71,8 @@ domains such as gmail.com).
 It checks at most the newest 200 inbox mails of the period and says so on
 standard error when there are more.
 
-`forward` and `new` take `--cc`, `--attach`, `--identity`, `--signature` and
-`--update` like `draft`. `forward` attaches the attachments of the original.
+`forward` and `new` take `--cc`, `--attach`, `--identity`, `--signature`,
+`--subject`, `--update` and `--drop-images` like `draft`. `forward` attaches the attachments of the original.
 
 `draft` options:
 
@@ -81,7 +81,9 @@ standard error when there are more.
 - `--attach FILE`: Attach a file. Repeatable.
 - `--identity NAME`: Reply as this Zimbra identity. Defaults to `identity` of the reply rule, else the identity whose "when sent to" addresses match a To or Cc address of the original, else `DEFAULT`.
 - `--signature NAME`: Use this Zimbra signature, `none` for none. Defaults to the reply signature of the identity.
-- `--update DRAFTID`: Replace an existing draft instead of creating a new one.
+- `--subject TEXT`: Subject. Defaults to `Re: ` and the subject of the original.
+- `--update DRAFTID`: Replace an existing draft instead of creating a new one. The old version goes to `~/.cache/zmclaude/backup/` (kept seven days); a draft with images or attachments the new version would drop is left unchanged.
+- `--drop-images`: With `--update`, replace the draft even if images or attachments get lost.
 
 The reply body is an HTML fragment if the file name ends in `.html`, plain
 text otherwise.

@@ -44,6 +44,9 @@ changes zmclaude itself. The full command reference is `docs/manual.md`.
    rule's `facts` or the user.
 7. For changes use `--update DRAFTID`. Zimbra gives a draft a new ID when the
    user edits it in the web client, so check `./zmclaude search in:drafts` first.
+   `--update` refuses to drop images the user pasted into the draft; then write
+   a new draft and list the changes for the user instead of `--drop-images`.
+   The old version is in `~/.cache/zmclaude/backup/` for seven days.
 8. If the user states a lasting fact or a way to answer a kind of mail, offer
    to add it to `~/.config/zmclaude/rules.toml`.
 

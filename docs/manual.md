@@ -92,6 +92,7 @@ and stores it with **draft**.
 - `new BODYFILE --to ADDR --subject TEXT`: Save a new mail.
 
 *BODYFILE* holds the text above the signature.
+Blank lines at its end are replaced by one blank line before the signature.
 A file name ending in `.html` is taken as an HTML fragment, any other file as plain text.
 
 # OPTIONS
@@ -100,12 +101,13 @@ Options of **draft**, **forward** and **new**:
 
 - `--to ADDR`: Add a recipient. Repeatable. Required for **forward** and **new**.
 - `--cc ADDR`: Add a Cc recipient. Repeatable.
-- `--all`, `--no-all`: Reply to all recipients of the original, except the user's own addresses, or only to the sender. The default is `reply_all` of the reply rule, else only the sender. **draft** only.
-- `--subject TEXT`: Subject. Required for **new**.
+- `--all`, `--no-all`: Reply to all recipients of the original, except the sending address and the account address, or only to the sender. The default is `reply_all` of the reply rule, else only the sender. **draft** only.
+- `--subject TEXT`: Subject. Required for **new**. The default of **draft** is the subject of the original without `Re:`, `Fw:` and `Fwd:` in front, prefixed with `Re: `, as the web client does; **forward** prefixes `Fwd: `.
 - `--attach FILE`: Attach a file. Repeatable.
 - `--identity NAME`: Write as this Zimbra identity. The default is `identity` of the reply rule, else the identity whose "when sent to" addresses match the original, else `DEFAULT`.
 - `--signature NAME`: Use this signature, `none` for none. The default is the reply signature of the identity, for **new** its default signature.
-- `--update DRAFTID`: Replace an existing draft instead of creating a new one.
+- `--update DRAFTID`: Replace an existing draft instead of creating a new one. The old version is saved to `~/.cache/zmclaude/backup/` first. If the old draft has inline images or attachments the new version does not carry, for example screenshots pasted in the web client, the command exits without changing the draft.
+- `--drop-images`: With `--update`, replace the draft even if images or attachments get lost.
 
 Options of **free**:
 
@@ -155,6 +157,10 @@ and mail an explicit reply rule matches is always listed.
 
 When a draft is edited in the web client, Zimbra saves it under a new ID.
 `--update` needs the current ID, which **search in:drafts** shows.
+
+**draft --update** and **fixhtml** save the message they replace or repair as
+`~/.cache/zmclaude/backup/DATE-TIME-ID.eml` and remove backups older than
+seven days. Zimbra keeps no old versions of a draft.
 
 **draft** reads identities, signatures and preferences from Zimbra on every call.
 The copies written by **sync** are for looking things up.
