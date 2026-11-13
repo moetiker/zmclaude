@@ -56,6 +56,8 @@ The full reference is the manual, [`docs/manual.md`](docs/manual.md).
 ./zmclaude fixhtml ID [--trash]       # repaired copy of a mail the web client shows as empty
 ./zmclaude contacts QUERY             # addresses from contacts and the global address list
 ./zmclaude free [--start YYYY-MM-DD] [--days N]   # free times from the calendar
+./zmclaude calendars                  # calendars with ID and path
+./zmclaude event SUBJECT START [END] [--calendar NAME] [--free]   # add an event, no attendees
 ./zmclaude draft ID reply.html [options]
 ./zmclaude forward ID body.html --to ADDR [options]
 ./zmclaude new body.html --to ADDR --subject TEXT [options]
