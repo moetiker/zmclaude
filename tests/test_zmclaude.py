@@ -472,3 +472,67 @@ def test_backup_removes_copies_older_than_a_week(z):
 def test_fixhtml_keeps_a_copy_of_the_original(z):
     fixhtml(z, mail(STRAY_STYLE, "8bit"))
     assert len(list(z.BACKUP_DIR.glob("*-7.eml"))) == 1
+
+
+@pytest.mark.parametrize("start, end, expected", [
+    ("2026-12-05", None, ("20261205", "20261205", True)),
+    ("2026-11-30", "2026-12-04", ("20261130", "20261204", True)),
+    ("2026-12-02 08:00", None, ("20261202T080000", "20261202T090000", False)),
+    ("2026-12-02 08:00", "17:30", ("20261202T080000", "20261202T173000", False)),
+    ("2026-12-02 22:00", "2026-12-03 01:00", ("20261202T220000", "20261203T010000", False)),
+])
+def test_event_times(z, start, end, expected):
+    assert z.event_times(start, end) == expected
+
+
+@pytest.mark.parametrize("start, end", [
+    ("2026-12-05", "2026-12-04"),
+    ("2026-12-02 08:00", "07:00"),
+    ("2026-12-02 8 Uhr", None),
+    ("2026-12-02", "17:00"),
+])
+def test_event_times_rejects(z, start, end):
+    with pytest.raises(SystemExit):
+        z.event_times(start, end)
+
+
+FOLDERS = {"folder": [{"folder": [
+    {"id": "10", "name": "Calendar", "view": "appointment"},
+    {"id": "2", "name": "Inbox", "view": "message"},
+    {"id": "20", "name": "Work", "view": "appointment",
+     "folder": [{"id": "21", "name": "Team", "view": "appointment"}]},
+    {"id": "30", "name": "Shared", "view": "appointment",
+     "link": [{"id": "31", "name": "Team", "view": "appointment"}]},
+]}]}
+
+
+def test_find_calendar(z):
+    z.call = lambda request, body, ns=None: FOLDERS
+    assert z.find_calendar("calendar") == "10"
+    assert z.find_calendar("Work/Team") == "21"
+    assert z.find_calendar("31") == "31"
+    with pytest.raises(SystemExit, match="ambiguous"):
+        z.find_calendar("Team")
+    with pytest.raises(SystemExit, match="no calendar"):
+        z.find_calendar("Inbox")
+
+
+def test_event_sends_no_invitation(z, capsys):
+    sent = []
+
+    def call(request, body, ns=None):
+        sent.append((request, body))
+        if request == "GetPrefsRequest":
+            return {"_attrs": {"zimbraPrefTimeZoneId": "Europe/Zurich"}}
+        return {"calItemId": "99"}
+
+    z.call = call
+    z.cmd_event(types.SimpleNamespace(subject="Power off", start="2026-12-04 17:00", end="18:00",
+                                      calendar=None, location="Lab", description="unplug all",
+                                      free=True))
+    request, body = sent[-1]
+    comp = body["m"]["inv"]["comp"][0]
+    assert request == "CreateAppointmentRequest" and body["m"]["l"] == "10"
+    assert comp["s"] == {"d": "20261204T170000", "tz": "Europe/Zurich"}
+    assert comp["fb"] == "F" and comp["loc"] == "Lab" and "at" not in comp
+    assert "event 99 saved" in capsys.readouterr().out
