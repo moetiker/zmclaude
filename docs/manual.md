@@ -25,6 +25,7 @@ Environment variables override the file, see **ENVIRONMENT**.
 - `from_name`: Sender name used when an identity sets none.
 - `ticket_systems`: List of addresses of ticketing systems such as RT. The **todo** command always lists mail from them.
 - `answers_dir`: Folder of Markdown files with earlier answers. The **todo** command names the files that mention the sender of a mail as `same sender`, and files that mention only another address of the sender's domain as `same domain`.
+- `wrap`: Line length of the text of drafts, default 78. `0` leaves the lines as they are, see `--wrap`.
 - `freemail_domains`: List of further domains shared by unrelated people, in addition to the built-in list (gmail.com, outlook.com, bluewin.ch and others). **todo** lists no `same domain` answers for them.
 
 Reply rules live in `rules.toml` in the same directory.
@@ -102,7 +103,7 @@ A file name ending in `.html` is taken as an HTML fragment, any other file as pl
 
 Options of **draft**, **forward** and **new**:
 
-- `--to ADDR`: Add a recipient. Repeatable. Required for **forward** and **new**.
+- `--to ADDR`: Add a recipient. Repeatable. Required for **forward** and **new**; **draft** adds it to the sender of the original.
 - `--cc ADDR`: Add a Cc recipient. Repeatable.
 - `--all`, `--no-all`: Reply to all recipients of the original, except the sending address and the account address, or only to the sender. The default is `reply_all` of the reply rule, else only the sender. **draft** only.
 - `--subject TEXT`: Subject. Required for **new**. The default of **draft** is the subject of the original without `Re:`, `Fw:` and `Fwd:` in front, prefixed with `Re: `, as the web client does; **forward** prefixes `Fwd: `.
@@ -111,6 +112,8 @@ Options of **draft**, **forward** and **new**:
 - `--signature NAME`: Use this signature, `none` for none. The default is the reply signature of the identity, for **new** its default signature.
 - `--update DRAFTID`: Replace an existing draft instead of creating a new one. The old version is saved to `~/.cache/zmclaude/backup/` first. If the old draft has inline images or attachments the new version does not carry, for example screenshots pasted in the web client, the command exits without changing the draft.
 - `--drop-images`: With `--update`, replace the draft even if images or attachments get lost.
+- `--images-from ID`: Carry over the inline images of draft *ID*, for example screenshots pasted in the web client, that *BODYFILE* refers to with `<img src="cid:...">`. The default is the draft of `--update`. Copy the `<img>` tags from **raw** of the draft into the new text to keep the images.
+- `--wrap N`: Replace the last space before column *N* of each line with `<br>`. Tags do not count; a word longer than *N* stays whole; text in `<pre>`, `<table>` and `<blockquote>` is left as it is. `0` leaves the lines as they are. The default is `wrap` of `config.toml`, else 78.
 
 Options of **free**:
 

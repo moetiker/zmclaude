@@ -74,11 +74,12 @@ It checks at most the newest 200 inbox mails of the period and says so on
 standard error when there are more.
 
 `forward` and `new` take `--cc`, `--attach`, `--identity`, `--signature`,
-`--subject`, `--update` and `--drop-images` like `draft`. `forward` attaches the attachments of the original.
+`--subject`, `--update`, `--drop-images`, `--images-from` and `--wrap` like `draft`. `forward` attaches the attachments of the original.
 
 `draft` options:
 
 - `--all`, `--no-all`: Reply to all recipients of the original, or only to the sender. Defaults to `reply_all` of the reply rule.
+- `--to ADDR`: Add a recipient besides the sender of the original. Repeatable.
 - `--cc ADDR`: Add a Cc recipient, in addition to `cc` of the reply rule. Repeatable.
 - `--attach FILE`: Attach a file. Repeatable.
 - `--identity NAME`: Reply as this Zimbra identity. Defaults to `identity` of the reply rule, else the identity whose "when sent to" addresses match a To or Cc address of the original, else `DEFAULT`.
@@ -86,6 +87,8 @@ standard error when there are more.
 - `--subject TEXT`: Subject. Defaults to `Re: ` and the subject of the original.
 - `--update DRAFTID`: Replace an existing draft instead of creating a new one. The old version goes to `~/.cache/zmclaude/backup/` (kept seven days); a draft with images or attachments the new version would drop is left unchanged.
 - `--drop-images`: With `--update`, replace the draft even if images or attachments get lost.
+- `--images-from ID`: Keep the images pasted into draft *ID* that the new text refers to with `<img src="cid:...">`. Defaults to the draft of `--update`, so `--update` keeps such images by itself.
+- `--wrap N`: Break the lines of the text after at most *N* characters, `0` for no breaks. Defaults to `wrap` in `config.toml`, else 78.
 
 The reply body is an HTML fragment if the file name ends in `.html`, plain
 text otherwise.
@@ -94,7 +97,7 @@ text otherwise.
 
 `~/.config/zmclaude/` (or `ZMCLAUDE_CONFIG`) holds:
 
-- `config.toml`: `url`, `user` and optionally `from_name`, `ticket_systems` (addresses of ticketing systems such as RT, whose mail `todo` always lists) `answers_dir` (a folder of Markdown files with earlier answers that `todo` searches by sender and domain) and `freemail_domains` (more domains such as gmail.com where `todo` does not search by domain).
+- `config.toml`: `url`, `user` and optionally `from_name`, `ticket_systems` (addresses of ticketing systems such as RT, whose mail `todo` always lists) `answers_dir` (a folder of Markdown files with earlier answers that `todo` searches by sender and domain) `freemail_domains` (more domains such as gmail.com where `todo` does not search by domain) and `wrap` (line length of draft texts, default 78, `0` for no breaks).
 - `rules.toml`: Reply rules: tone, greeting, closing and fixed facts per recipient address, sender or subject. `init` writes a first version with commented examples; `sync` never touches it.
 - `identities.json`, `signatures/`, `filters.json`, `prefs.json`: Copies from Zimbra, rewritten by `sync`.
 

@@ -340,6 +340,7 @@ def draft(z, tmp_path, monkeypatch, *argv, old=None, text="<div>Thanks</div><div
     z.call = call
     z.get_msg = lambda msg_id, rich=False: ORIGINAL if msg_id == "7" else old
     z.fetch_rest = lambda path: b"From: jane@example.com\r\n\r\nold draft\r\n"
+    z.CONFIG_DIR = tmp_path
     z.RULES_FILE = tmp_path / "rules.toml"
     body = tmp_path / "body.html"
     body.write_text(text)
@@ -394,6 +395,66 @@ def test_update_refuses_to_drop_pasted_images(z, tmp_path, monkeypatch):
 def test_update_drops_images_when_asked(z, tmp_path, monkeypatch):
     saved = draft(z, tmp_path, monkeypatch, "--update", "9", "--drop-images", old=PASTED)
     assert saved[0]["id"] == "9"
+
+
+def test_update_keeps_pasted_images_the_text_still_shows(z, tmp_path, monkeypatch, capsys):
+    saved = draft(z, tmp_path, monkeypatch, "--update", "9", old=PASTED,
+                  text="<div>See <img src='cid:x1'></div>")
+    related = saved[0]["mp"][0]["mp"][1]["mp"][1:]
+    assert related == [{"ci": "x1", "attach": {"mp": [{"mid": "9", "part": "1.2"}]}}]
+    assert "image x1 kept from 9" in capsys.readouterr().out
+
+
+def test_images_from_takes_pasted_images_into_a_new_draft(z, tmp_path, monkeypatch):
+    saved = draft(z, tmp_path, monkeypatch, "--images-from", "9", old=PASTED,
+                  text="<div>See <img src='cid:x1'></div>")
+    assert "id" not in saved[0]
+    assert saved[0]["mp"][0]["mp"][1]["mp"][1]["attach"]["mp"] == [{"mid": "9", "part": "1.2"}]
+
+
+def test_reply_to_adds_a_recipient_once(z, tmp_path, monkeypatch):
+    saved = draft(z, tmp_path, monkeypatch, "--to", "carl@example.org", "--to", "Bob@example.org")
+    assert [(e["t"], e["a"]) for e in saved[0]["e"]][1:] == [("t", "bob@example.org"),
+                                                            ("t", "carl@example.org")]
+
+
+def test_reply_text_is_wrapped(z, tmp_path, monkeypatch):
+    saved = draft(z, tmp_path, monkeypatch, "--wrap", "10", text="<div>aaaa bbbb cccc</div>")
+    rich = saved[0]["mp"][0]["mp"][1]["content"]["_content"]
+    assert "<div>aaaa bbbb<br>cccc</div>" in rich
+
+
+def test_wrap_comes_from_the_config(z, tmp_path, monkeypatch):
+    (tmp_path / "config.toml").write_text("wrap = 0\n")
+    text = "<div>" + "word " * 40 + "</div>"
+    saved = draft(z, tmp_path, monkeypatch, text=text)
+    assert "<br>" not in saved[0]["mp"][0]["mp"][1]["content"]["_content"].split("<div><br>")[0]
+
+
+@pytest.mark.parametrize("fragment, width, expected", [
+    ("<div>aaaa bbbb cccc</div>", 9, "<div>aaaa bbbb<br>cccc</div>"),
+    ("<div>aaaa bbbb cccc</div>", 8, "<div>aaaa<br>bbbb<br>cccc</div>"),
+    # tags do not count, entities count as one character
+    ("<div><b>aaaa</b> b&amp;b cc</div>", 8, "<div><b>aaaa</b> b&amp;b<br>cc</div>"),
+    # the space may sit in an earlier text node
+    ("<div>aaaa <b>bbbbbb</b></div>", 8, "<div>aaaa<br><b>bbbbbb</b></div>"),
+    ("<div>aaaaaaaaaaaa bb</div>", 8, "<div>aaaaaaaaaaaa<br>bb</div>"),
+    ("<div>aaaa<br>bbbb</div><div>cccc</div>", 4, "<div>aaaa<br>bbbb</div><div>cccc</div>"),
+    ("<blockquote>aaaa bbbb cccc</blockquote>", 8, "<blockquote>aaaa bbbb cccc</blockquote>"),
+    ("<div>aaaa bbbb cccc</div>", 0, "<div>aaaa bbbb cccc</div>"),
+])
+def test_wrap_html(z, fragment, width, expected):
+    assert z.wrap_html(fragment, width) == expected
+
+
+@pytest.mark.parametrize("fragment, expected", [
+    # a line break between two divs is no blank line
+    ("<div>Kind regards</div>\n<div>Jane</div>\n", "Kind regards\nJane"),
+    ("<div>Hi</div>\n<div><br></div>\n<div>Text\nmore</div>", "Hi\n\nText more"),
+    ("<pre>a\n  b</pre>", "a\n  b"),
+])
+def test_html_to_text_treats_source_line_breaks_as_spaces(z, fragment, expected):
+    assert z.html_to_text(fragment) == expected
 
 
 def test_backup_removes_copies_older_than_a_week(z):

@@ -23,8 +23,9 @@ Usage:
                                      add an event without attendees
   zmclaude forward ID BODYFILE --to ADDR [...]   save a forward draft
   zmclaude new BODYFILE --to ADDR --subject S [...]  save a new mail draft
-  zmclaude draft ID BODYFILE [--all] [--cc ADDR] [--attach FILE]
+  zmclaude draft ID BODYFILE [--all] [--to ADDR] [--cc ADDR] [--attach FILE]
                     [--identity NAME] [--signature NAME] [--update DRAFTID]
+                    [--images-from ID] [--wrap N]
                                      save an HTML reply draft; BODYFILE is an
                                      HTML fragment if it ends in .html, else text
 
@@ -255,9 +256,16 @@ def cmd_search(args):
 
 def html_to_text(text):
     text = re.sub(r"(?is)<(head|script|style).*?</\1>", "", text)
-    text = re.sub(r"(?i)<li[^>]*>", "- ", text)
-    text = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</li>|</tr>|<hr[^>]*>", "\n", text)
-    text = html.unescape(re.sub(r"<[^>]+>", "", text)).replace("\xa0", " ")
+    out = []
+    # a line break in the source is a space in HTML, except inside <pre>
+    for i, part in enumerate(re.split(r"(?is)(<pre\b.*?</pre>)", text)):
+        if not i % 2:
+            part = re.sub(r"\s+", " ", part)
+        part = re.sub(r"(?i)<li[^>]*>", "- ", part)
+        part = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</li>|</tr>|<hr[^>]*>", "\n", part)
+        part = re.sub(r"<[^>]+>", "", part)
+        out.append(part if i % 2 else re.sub(r" *\n *", "\n", part))
+    text = html.unescape("".join(out)).replace("\xa0", " ")
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
@@ -266,6 +274,46 @@ def text_to_html(text):
     return "".join(
         "<p>" + html.escape(para).replace("\n", "<br>") + "</p>" for para in paras
     )
+
+
+# elements that start a new line, and elements whose lines are left as they are
+LINE_TAGS = {"div", "p", "br", "li", "ul", "ol", "tr", "hr", "h1", "h2", "h3", "h4", "h5", "h6"}
+NO_WRAP_TAGS = {"pre", "table", "blockquote"}
+WRAP_DEFAULT = 78
+
+
+def wrap_html(fragment, width):
+    """Break the lines of an HTML fragment after at most width characters.
+
+    A <br> replaces the last space before the limit. Tags do not count, an
+    entity counts as one character, and a word longer than width stays whole.
+    """
+    if width <= 0:
+        return fragment
+    tokens = re.split(r"(<[^>]*>)", fragment)
+    col, last, skip = 0, None, 0
+    for i, tok in enumerate(tokens):
+        if tok.startswith("<"):
+            name = re.match(r"<(/?)\s*([a-zA-Z0-9]+)", tok)
+            if name:
+                tag = name.group(2).lower()
+                if tag in NO_WRAP_TAGS:
+                    skip = max(0, skip + (-1 if name.group(1) else 1))
+                if tag in LINE_TAGS or tag in NO_WRAP_TAGS:
+                    col, last = 0, None
+            continue
+        if skip or not tok:
+            continue
+        units = tokens[i] = re.findall(r"&#?\w+;|\s+|.", tok, re.DOTALL)
+        for j, unit in enumerate(units):
+            if unit.isspace():
+                last = (i, j, col + 1)
+            col += 1
+            if col > width and last:
+                tokens[last[0]][last[1]] = "<br>"
+                col -= last[2]
+                last = None
+    return "".join(t if isinstance(t, str) else "".join(t) for t in tokens)
 
 
 def body_parts(part):
@@ -931,6 +979,11 @@ def compose(args, mode):
     m = get_msg(args.id, rich=True) if mode != "new" else {}
     body = Path(args.bodyfile).read_text(encoding="utf-8")
     body_html = body if args.bodyfile.endswith(".html") else text_to_html(body)
+    width = args.wrap if args.wrap is not None else read_config().get("wrap", WRAP_DEFAULT)
+    body_html = wrap_html(body_html, width)
+    old = get_msg(args.update, rich=True) if args.update else None
+    images_from = args.images_from or args.update
+    source = old if images_from == args.update else get_msg(images_from, rich=True) if images_from else None
     emails = m.get("e", [])
     from_rule = apply_rule(args, m, mode)
     ident, _ = pick_identity(m, args.identity)
@@ -951,8 +1004,11 @@ def compose(args, mode):
                 if e["t"] in "tc" and e["a"].lower() not in seen:
                     seen.add(e["a"].lower())
                     recipients.append(recipient("c", e))
-    recipients += [{"t": "t", "a": a} for a in getattr(args, "to", [])]
     present = {r["a"].lower() for r in recipients}
+    for a in args.to:
+        if a.lower() not in present:
+            present.add(a.lower())
+            recipients.append({"t": "t", "a": a})
     for a in args.cc:
         if a.lower() not in present:
             present.add(a.lower())
@@ -1026,11 +1082,18 @@ def compose(args, mode):
     plain += "\n"
 
     html_part = {"ct": "text/html", "content": {"_content": rich}}
+    # images pasted into a draft that the new text still shows, taken from
+    # that draft
+    pasted = {cid: part for cid, part in inline_parts(source).items()
+              if f"cid:{cid}" in body_html and cid not in images} if source else {}
     # images of the original come from its parts, signature images from the
     # Briefcase, the same two sources the web client uses
     related = [
         {"ci": cid, "attach": {"mp": [{"mid": m["id"], "part": part}]}}
         for cid, part in images.items()
+    ] + [
+        {"ci": cid, "attach": {"mp": [{"mid": source["id"], "part": part}]}}
+        for cid, part in pasted.items()
     ] + [
         {"ci": cid, "attach": {"doc": [{"path": path, "optional": 1}]}}
         for cid, path in sig_images.items()
@@ -1059,7 +1122,7 @@ def compose(args, mode):
     if args.update:
         # SaveDraftRequest replaces the whole draft and Zimbra keeps no old
         # version, so keep a copy and refuse to drop images the user pasted
-        lost = lost_parts(get_msg(args.update, rich=True), {r["ci"] for r in related},
+        lost = lost_parts(old, {r["ci"] for r in related},
                           {Path(f).name for f in args.attach}
                           | {name for _, name, *_ in (attachment_parts(m) if mode == "forward" else [])})
         if lost and not args.drop_images:
@@ -1088,6 +1151,8 @@ def compose(args, mode):
         print(f"  previous version saved to {saved}")
     if from_rule:
         print(f"  {from_rule}")
+    for cid in pasted:
+        print(f"  image {cid} kept from {source['id']}")
     for f in args.attach:
         print(f"  attached: {Path(f).name}")
     for _, name, *_ in forwarded:
@@ -1372,6 +1437,8 @@ def main():
         p.add_argument("--signature")
         p.add_argument("--update", metavar="DRAFTID")
         p.add_argument("--drop-images", action="store_true")
+        p.add_argument("--images-from", metavar="ID")
+        p.add_argument("--wrap", type=int, metavar="N")
         p.set_defaults(func=func, id=None)
     p = sub.add_parser("draft")
     p.add_argument("id")
@@ -1387,6 +1454,13 @@ def main():
     p.add_argument("--update", metavar="DRAFTID", help="replace this existing draft")
     p.add_argument("--drop-images", action="store_true",
                    help="with --update: replace the draft even if images or attachments get lost")
+    p.add_argument("--images-from", metavar="ID",
+                   help="keep the pasted images of this draft that the text refers to "
+                   "with cid:; default: the draft of --update")
+    p.add_argument("--wrap", type=int, metavar="N",
+                   help=f"break lines after N characters, 0 for no breaks; "
+                   f"default: wrap of config.toml, else {WRAP_DEFAULT}")
+    p.add_argument("--to", action="append", default=[], metavar="ADDR", help="add a recipient")
     p.add_argument("--cc", action="append", default=[], metavar="ADDR", help="add a Cc recipient")
     p.add_argument("--attach", action="append", default=[], metavar="FILE", help="attach a file")
     p.set_defaults(func=cmd_draft)
