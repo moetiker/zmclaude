@@ -13,6 +13,7 @@
 - `draft`, `forward` and `new` with `--update` save the old draft to `~/.cache/zmclaude/backup/` and refuse to drop images or attachments the new version does not carry, unless `--drop-images` is given. `fixhtml` saves the original there as well. Backups older than seven days are removed.
 
 ### Changed
+- The plain-text part of a draft no longer shows a blank line where the HTML source of the text has a line break between two lines.
 - A reply has one blank line between the text and the signature, however many the body file ends with.
 - The reply subject is built as in the web client: `Re:`, `Fw:` and `Fwd:` are removed and `Re: ` is put in front, so `AW: x` becomes `Re: AW: x`.
 

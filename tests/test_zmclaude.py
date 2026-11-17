@@ -447,6 +447,16 @@ def test_wrap_html(z, fragment, width, expected):
     assert z.wrap_html(fragment, width) == expected
 
 
+@pytest.mark.parametrize("fragment, expected", [
+    # a line break between two divs is no blank line
+    ("<div>Kind regards</div>\n<div>Jane</div>\n", "Kind regards\nJane"),
+    ("<div>Hi</div>\n<div><br></div>\n<div>Text\nmore</div>", "Hi\n\nText more"),
+    ("<pre>a\n  b</pre>", "a\n  b"),
+])
+def test_html_to_text_treats_source_line_breaks_as_spaces(z, fragment, expected):
+    assert z.html_to_text(fragment) == expected
+
+
 def test_backup_removes_copies_older_than_a_week(z):
     z.BACKUP_DIR.mkdir()
     old, recent = z.BACKUP_DIR / "old.eml", z.BACKUP_DIR / "recent.eml"

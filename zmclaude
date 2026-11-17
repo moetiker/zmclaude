@@ -253,9 +253,16 @@ def cmd_search(args):
 
 def html_to_text(text):
     text = re.sub(r"(?is)<(head|script|style).*?</\1>", "", text)
-    text = re.sub(r"(?i)<li[^>]*>", "- ", text)
-    text = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</li>|</tr>|<hr[^>]*>", "\n", text)
-    text = html.unescape(re.sub(r"<[^>]+>", "", text)).replace("\xa0", " ")
+    out = []
+    # a line break in the source is a space in HTML, except inside <pre>
+    for i, part in enumerate(re.split(r"(?is)(<pre\b.*?</pre>)", text)):
+        if not i % 2:
+            part = re.sub(r"\s+", " ", part)
+        part = re.sub(r"(?i)<li[^>]*>", "- ", part)
+        part = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</li>|</tr>|<hr[^>]*>", "\n", part)
+        part = re.sub(r"<[^>]+>", "", part)
+        out.append(part if i % 2 else re.sub(r" *\n *", "\n", part))
+    text = html.unescape("".join(out)).replace("\xa0", " ")
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
