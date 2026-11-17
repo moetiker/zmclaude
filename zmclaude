@@ -18,6 +18,9 @@ Usage:
   zmclaude fixhtml ID [--trash]       import a copy Zimbra can display
   zmclaude contacts QUERY             look up addresses in contacts and GAL
   zmclaude free [--start D] [--days N]  free times from the calendar
+  zmclaude calendars                  list the calendars
+  zmclaude event SUBJECT START [END] [--calendar NAME] [--free]
+                                     add an event without attendees
   zmclaude forward ID BODYFILE --to ADDR [...]   save a forward draft
   zmclaude new BODYFILE --to ADDR --subject S [...]  save a new mail draft
   zmclaude draft ID BODYFILE [--all] [--cc ADDR] [--attach FILE]
@@ -653,6 +656,86 @@ def cmd_free(args):
         day += timedelta(days=1)
 
 
+def calendar_folders():
+    """(id, path) of every calendar folder, mounted calendars included."""
+    found = []
+
+    def walk(folder, path):
+        for sub in folder.get("folder", []) + folder.get("link", []):
+            sub_path = f"{path}/{sub['name']}" if path else sub["name"]
+            if sub.get("view") == "appointment":
+                found.append((sub["id"], sub_path))
+            walk(sub, sub_path)
+
+    walk(call("GetFolderRequest", {})["folder"][0], "")
+    return found
+
+
+def cmd_calendars(_args):
+    for folder_id, path in calendar_folders():
+        print(f"{folder_id:>9}  {path}")
+
+
+def find_calendar(name):
+    folders = calendar_folders()
+    for wanted in (lambda i, p: i == name or p.lower() == name.lower(),
+                   lambda i, p: p.rsplit("/", 1)[-1].lower() == name.lower()):
+        hits = [(i, p) for i, p in folders if wanted(i, p)]
+        if len(hits) == 1:
+            return hits[0][0]
+        if hits:
+            sys.exit(f"calendar {name!r} is ambiguous: " + ", ".join(p for _, p in hits))
+    sys.exit(f"no calendar {name!r}, see: zmclaude calendars")
+
+
+def event_times(start, end):
+    """Zimbra start and end of an event, and whether it lasts all day.
+
+    A date alone (YYYY-MM-DD) makes an all-day event whose END is the last
+    day; a time (YYYY-MM-DD HH:MM) a timed one, by default one hour long.
+    END may be a time of the start day (HH:MM).
+    """
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", start):
+            first = datetime.strptime(start, "%Y-%m-%d")
+            last = datetime.strptime(end, "%Y-%m-%d") if end else first
+            if last < first:
+                sys.exit("the event ends before it starts")
+            return first.strftime("%Y%m%d"), last.strftime("%Y%m%d"), True
+        begin = datetime.strptime(start, "%Y-%m-%d %H:%M")
+        if not end:
+            finish = begin + timedelta(hours=1)
+        elif re.fullmatch(r"\d{1,2}:\d{2}", end):
+            finish = datetime.combine(begin.date(), datetime.strptime(end, "%H:%M").time())
+        else:
+            finish = datetime.strptime(end, "%Y-%m-%d %H:%M")
+    except ValueError:
+        sys.exit("START and END are YYYY-MM-DD or 'YYYY-MM-DD HH:MM'; END may also be HH:MM")
+    if finish <= begin:
+        sys.exit("the event ends before it starts")
+    return begin.strftime("%Y%m%dT%H%M%S"), finish.strftime("%Y%m%dT%H%M%S"), False
+
+
+def cmd_event(args):
+    start, end, all_day = event_times(args.start, args.end)
+    # 10 is the fixed ID of the default calendar in every Zimbra mailbox
+    folder = find_calendar(args.calendar) if args.calendar else "10"
+    when_s, when_e = {"d": start}, {"d": end}
+    if not all_day:
+        tz = get_prefs().get("zimbraPrefTimeZoneId")
+        if tz:
+            when_s["tz"] = when_e["tz"] = tz
+    comp = {"name": args.subject, "allDay": "1" if all_day else "0", "s": when_s, "e": when_e,
+            "fb": "F" if args.free else "B", "transp": "T" if args.free else "O", "class": "PUB"}
+    if args.location:
+        comp["loc"] = args.location
+    msg = {"l": folder, "su": args.subject, "inv": {"comp": [comp]}}
+    if args.description:
+        msg["mp"] = {"ct": "text/plain", "content": args.description}
+    resp = call("CreateAppointmentRequest", {"m": msg})
+    print(f"event {resp.get('calItemId')} saved: {args.subject}")
+
+
 def get_prefs():
     return call("GetPrefsRequest", {}, ns="urn:zimbraAccount").get("_attrs", {})
 
@@ -1265,6 +1348,16 @@ def main():
     p.add_argument("--min", type=int, default=30, help="shortest slot in minutes")
     p.add_argument("--weekends", action="store_true")
     p.set_defaults(func=cmd_free)
+    sub.add_parser("calendars", help="list the calendars").set_defaults(func=cmd_calendars)
+    p = sub.add_parser("event", help="add an event without attendees to a calendar")
+    p.add_argument("subject")
+    p.add_argument("start", help="YYYY-MM-DD (all day) or 'YYYY-MM-DD HH:MM'")
+    p.add_argument("end", nargs="?", help="last day, 'YYYY-MM-DD HH:MM' or HH:MM")
+    p.add_argument("--calendar", metavar="NAME", help="calendar name, path or ID, default Calendar")
+    p.add_argument("--location", metavar="TEXT")
+    p.add_argument("--description", metavar="TEXT")
+    p.add_argument("--free", action="store_true", help="show as free instead of busy")
+    p.set_defaults(func=cmd_event)
     for name, func, help_text in (("forward", cmd_forward, "save a forward draft"),
                                   ("new", cmd_new, "save a new mail draft")):
         p = sub.add_parser(name, help=help_text)

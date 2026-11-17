@@ -56,6 +56,7 @@ Sender address, signature and signature images come from the Zimbra identity, no
 **zmclaude** finds mail in a Zimbra mailbox, prints it and saves drafts.
 It never sends mail.
 Drafts appear in the Drafts folder of the Zimbra web client and are sent from there.
+**event** enters calendar events without attendees.
 
 A reply draft has the structure of a reply from the web client:
 the identity whose "when sent to" addresses match the original,
@@ -85,6 +86,8 @@ and stores it with **draft**.
 - `fixhtml ID [--trash]`: Remove comment ends (`-->` or `<![endif]-->`) from the `<style>` blocks of message *ID* that contain no `<!--`, which the web client otherwise shows as an empty page, and import the repaired copy into the same folder with the date, flags and tags of the original. `--trash` moves the original to the trash. A message with nothing to repair is left as it is and the command exits 1.
 - `contacts QUERY`: Look up addresses in the contacts and the global address list.
 - `free [--start YYYY-MM-DD] [--days N]`: Print the free times from the calendar per working day, see **OPTIONS**.
+- `calendars`: List the calendars with ID and folder path, mounted calendars of other accounts included.
+- `event SUBJECT START [END]`: Add an event to a calendar. A *START* of the form `YYYY-MM-DD` makes an all-day event, and *END* is then its last day, by default the start day. A *START* of the form `"YYYY-MM-DD HH:MM"` makes a timed event in the time zone of the user's preferences, and *END* is `"YYYY-MM-DD HH:MM"` or `HH:MM` on the start day, by default one hour after the start. The event has no attendees, so no invitation is sent.
 - `rule ID`: Print the identity and the reply rule that apply to a message.
 - `sync`: Copy identities, signatures, filter rules and compose preferences from Zimbra into the configuration directory.
 - `draft ID BODYFILE`: Save a reply to message *ID*.
@@ -117,6 +120,13 @@ Options of **free**:
 - `--to-hour H`: End of the working day, default 18.
 - `--min M`: Shortest free slot in minutes, default 30.
 - `--weekends`: Include Saturday and Sunday.
+
+Options of **event**:
+
+- `--calendar NAME`: Calendar by ID, folder path or name, as **calendars** prints them. The default is the main calendar. A name that fits more than one calendar is refused.
+- `--location TEXT`: Location.
+- `--description TEXT`: Plain-text description.
+- `--free`: Show the time as free. The default is busy.
 
 # EXIT STATUS
 
@@ -211,6 +221,14 @@ zmclaude forward 81199 note.html --to colleague@example.com
 zmclaude contacts smith
 zmclaude free --start 2026-10-26 --days 5
 zmclaude new invite.html --to alex@example.com --subject "Meeting next week"
+```
+
+Enter an all-day event, and a timed one in another calendar:
+
+```sh
+zmclaude calendars
+zmclaude event "Power shutdown" 2026-12-05 --description "Server room on backup line"
+zmclaude event "Inspection" "2026-12-02 08:00" 17:00 --calendar Projects --free
 ```
 
 A session with an AI assistant usually runs:
